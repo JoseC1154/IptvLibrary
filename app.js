@@ -27,7 +27,9 @@ const seedData = {
 
 const state = {
   library: loadLibrary(),
-  selectedGroupId: "all"
+  selectedGroupId: "all",
+  importedM3uChannels: [],
+  lastPreviewedM3uId: ""
 };
 
 const playerState = {
@@ -37,6 +39,8 @@ const playerState = {
   stallRecoveryTimer: null
 };
 
+const failedImageUrls = new Set();
+
 const refs = {
   groupList: document.getElementById("groupList"),
   channelGrid: document.getElementById("channelGrid"),
@@ -45,8 +49,10 @@ const refs = {
   emptyState: document.getElementById("emptyState"),
   addGroupBtn: document.getElementById("addGroupBtn"),
   addChannelBtn: document.getElementById("addChannelBtn"),
+  networkUrlBtn: document.getElementById("networkUrlBtn"),
   exportBtn: document.getElementById("exportBtn"),
   importInput: document.getElementById("importInput"),
+  m3uImportInput: document.getElementById("m3uImportInput"),
   groupDialog: document.getElementById("groupDialog"),
   groupForm: document.getElementById("groupForm"),
   groupDialogTitle: document.getElementById("groupDialogTitle"),
@@ -84,7 +90,19 @@ const refs = {
   miniPlayer: document.getElementById("miniPlayer"),
   miniPlayerVideoHost: document.getElementById("miniPlayerVideoHost"),
   miniPlayerRestoreBtn: document.getElementById("miniPlayerRestoreBtn"),
-  miniPlayerStopBtn: document.getElementById("miniPlayerStopBtn")
+  miniPlayerStopBtn: document.getElementById("miniPlayerStopBtn"),
+  m3uDialog: document.getElementById("m3uDialog"),
+  m3uSummary: document.getElementById("m3uSummary"),
+  m3uList: document.getElementById("m3uList"),
+  m3uEmpty: document.getElementById("m3uEmpty"),
+  m3uItemTemplate: document.getElementById("m3uItemTemplate"),
+  m3uAddAllBtn: document.getElementById("m3uAddAllBtn"),
+  networkStreamForm: document.getElementById("networkStreamForm"),
+  networkStreamUrl: document.getElementById("networkStreamUrl"),
+  networkStreamTitle: document.getElementById("networkStreamTitle"),
+  networkStreamGroup: document.getElementById("networkStreamGroup"),
+  networkStreamLogo: document.getElementById("networkStreamLogo"),
+  networkPlayBtn: document.getElementById("networkPlayBtn")
 };
 
 initialize();
@@ -100,8 +118,24 @@ function initialize() {
 function bindEvents() {
   refs.addGroupBtn.addEventListener("click", () => openGroupDialog());
   refs.addChannelBtn.addEventListener("click", () => openChannelDialog());
+  refs.networkUrlBtn.addEventListener("click", openM3uDialogForNetworkUrl);
   refs.exportBtn.addEventListener("click", exportLibrary);
   refs.importInput.addEventListener("change", importLibrary);
+  refs.m3uImportInput.addEventListener("change", importM3uPlaylist);
+  refs.m3uAddAllBtn.addEventListener("click", addAllImportedChannels);
+  refs.networkStreamForm.addEventListener("submit", onNetworkStreamSubmit);
+  refs.networkPlayBtn.addEventListener("click", () => {
+    playNetworkStreamFromForm();
+  });
+  refs.m3uDialog.addEventListener("click", (event) => {
+    if (event.target === refs.m3uDialog) {
+      refs.m3uDialog.close();
+    }
+  });
+  refs.m3uDialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    refs.m3uDialog.close();
+  });
 
   refs.groupForm.addEventListener("submit", onGroupSubmit);
   refs.channelForm.addEventListener("submit", onChannelSubmit);
@@ -221,15 +255,7 @@ function renderChannels() {
     });
 
     if (channel.imageUrl) {
-      image.src = channel.imageUrl;
-      image.alt = `${channel.name} poster`;
-      image.addEventListener(
-        "error",
-        () => {
-          image.removeAttribute("src");
-        },
-        { once: true }
-      );
+      applyImageWithFallback(image, channel.imageUrl, `${channel.name} poster`);
     } else {
       image.removeAttribute("src");
       image.alt = "Channel image placeholder";
@@ -453,6 +479,431 @@ function exportLibrary() {
   link.click();
 
   URL.revokeObjectURL(url);
+}
+
+async function importM3uPlaylist(event) {
+  const [file] = event.target.files ?? [];
+  if (!file) {
+    return;
+  }
+
+  try {
+    const text = await file.text();
+    const parsedChannels = parseM3uText(text);
+
+    state.importedM3uChannels = parsedChannels;
+    renderM3uChannels();
+    refs.m3uDialog.showModal();
+
+    if (parsedChannels.length === 0) {
+      window.alert(
+        "No channel entries were detected. This can happen if the file uses unsupported formatting or is a media-segment playlist instead of a channel playlist."
+      );
+    }
+  } catch {
+    window.alert("Failed to parse M3U/M3U8 file.");
+  } finally {
+    refs.m3uImportInput.value = "";
+  }
+}
+
+function openM3uDialogForNetworkUrl() {
+  if (!refs.m3uDialog.open) {
+    refs.m3uDialog.showModal();
+  }
+
+  refs.networkStreamUrl.focus();
+}
+
+function parseM3uText(text) {
+  const normalizedText = text.replace(/^\uFEFF/, "");
+  const lines = normalizedText.split(/\r?\n/).map((line) => line.trim());
+  const channels = [];
+  let pendingMeta = {};
+
+  for (const line of lines) {
+    if (!line) {
+      continue;
+    }
+
+    if (line.startsWith("#EXTINF:")) {
+      pendingMeta = parseExtinf(line);
+      continue;
+    }
+
+    if (line.startsWith("#EXTGRP:")) {
+      pendingMeta.groupTitle = line.slice(8).trim();
+      continue;
+    }
+
+    if (line.startsWith("#")) {
+      continue;
+    }
+
+    if (isLikelyStreamLine(line)) {
+      const streamUrl = cleanImportedStreamUrl(line);
+      if (!streamUrl) {
+        pendingMeta = {};
+        continue;
+      }
+
+      const name = resolveImportedChannelName(pendingMeta, line, channels.length + 1);
+      channels.push({
+        id: createId("m3u"),
+        name,
+        streamUrl,
+        imageUrl: normalizeImageUrl(pendingMeta.logo || ""),
+        groupName: pendingMeta.groupTitle || "Imported"
+      });
+      pendingMeta = {};
+    }
+  }
+
+  return channels;
+}
+
+function parseExtinf(line) {
+  const result = {
+    name: "",
+    tvgName: "",
+    logo: "",
+    groupTitle: ""
+  };
+
+  const commaIndex = line.indexOf(",");
+  if (commaIndex !== -1) {
+    result.name = line.slice(commaIndex + 1).trim();
+  }
+
+  const logoMatch = line.match(/tvg-logo=["']([^"']+)["']/i);
+  if (logoMatch) {
+    result.logo = logoMatch[1].trim();
+  }
+
+  const tvgNameMatch = line.match(/tvg-name=["']([^"']+)["']/i);
+  if (tvgNameMatch) {
+    result.tvgName = tvgNameMatch[1].trim();
+  }
+
+  const groupMatch = line.match(/group-title=["']([^"']+)["']/i);
+  if (groupMatch) {
+    result.groupTitle = groupMatch[1].trim();
+  }
+
+  return result;
+}
+
+function isLikelyStreamLine(line) {
+  return /^[a-z][a-z0-9+.-]*:/i.test(line);
+}
+
+function cleanImportedStreamUrl(line) {
+  const trimmed = line.trim().replace(/^['"]|['"]$/g, "");
+  if (!trimmed) {
+    return "";
+  }
+
+  if (/^(#|\/\/)/.test(trimmed)) {
+    return "";
+  }
+
+  return trimmed;
+}
+
+function resolveImportedChannelName(meta, streamUrl, fallbackIndex) {
+  const fromMeta = (meta.tvgName || meta.name || "").trim();
+  if (fromMeta) {
+    return fromMeta;
+  }
+
+  const fromUrl = extractNameFromUrl(streamUrl);
+  if (fromUrl) {
+    return fromUrl;
+  }
+
+  return `Channel ${fallbackIndex}`;
+}
+
+function extractNameFromUrl(url) {
+  try {
+    const parsed = new URL(url);
+    const lastSegment = parsed.pathname.split("/").filter(Boolean).pop() ?? "";
+    if (!lastSegment) {
+      return "";
+    }
+
+    return decodeURIComponent(lastSegment)
+      .replace(/\.(m3u8|mpd|mp4|ts|m4s)$/i, "")
+      .replace(/[._-]+/g, " ")
+      .trim();
+  } catch {
+    return "";
+  }
+}
+
+function renderM3uChannels() {
+  const channels = state.importedM3uChannels;
+  refs.m3uList.textContent = "";
+  refs.m3uAddAllBtn.disabled = channels.length === 0;
+
+  refs.m3uSummary.textContent = channels.length
+    ? `${channels.length} channels found`
+    : "No channels found in file.";
+
+  refs.m3uEmpty.classList.toggle("hidden", channels.length > 0);
+
+  channels.forEach((channel) => {
+    const row = refs.m3uItemTemplate.content.firstElementChild.cloneNode(true);
+    if (channel.id === state.lastPreviewedM3uId) {
+      row.classList.add("last-previewed");
+    }
+
+
+    const image = row.querySelector(".m3u-item-image");
+    const title = row.querySelector(".m3u-item-title");
+    const subtitle = row.querySelector(".m3u-item-subtitle");
+    const playBtn = row.querySelector(".m3u-play-btn");
+    const addBtn = row.querySelector(".m3u-add-btn");
+    const groupSelect = row.querySelector(".m3u-group-select");
+    const alreadyAdded = state.library.channels.some(
+      (item) => item.streamUrl === channel.streamUrl && item.name.toLowerCase() === channel.name.toLowerCase()
+    );
+
+    title.textContent = channel.name;
+    subtitle.textContent = `${channel.groupName} • ${channel.streamUrl}`;
+    populateM3uGroupSelect(groupSelect, channel.groupName);
+
+    if (channel.imageUrl) {
+      applyImageWithFallback(image, channel.imageUrl, `${channel.name} logo`);
+    } else {
+      image.removeAttribute("src");
+      image.alt = "Channel logo placeholder";
+    }
+
+    playBtn.addEventListener("click", () => {
+      const channelForPlay = {
+        id: channel.id,
+        name: channel.name,
+        groupId: ensureGroupByName(channel.groupName),
+        streamUrl: channel.streamUrl,
+        imageUrl: channel.imageUrl
+      };
+
+      state.lastPreviewedM3uId = channel.id;
+      openPlayer(channelForPlay);
+      renderM3uChannels();
+    });
+
+    addBtn.addEventListener("click", () => {
+      const targetGroupId = resolveGroupIdFromSelection(groupSelect.value, channel.groupName);
+      addImportedChannelToLibrary(channel, targetGroupId);
+      addBtn.textContent = "Added";
+      addBtn.disabled = true;
+      groupSelect.disabled = true;
+    });
+
+    if (alreadyAdded) {
+      addBtn.textContent = "Added";
+      addBtn.disabled = true;
+      groupSelect.disabled = true;
+    }
+
+    refs.m3uList.appendChild(row);
+  });
+}
+
+function addAllImportedChannels() {
+  if (!state.importedM3uChannels.length) {
+    return;
+  }
+
+  let addedCount = 0;
+
+  state.importedM3uChannels.forEach((channel) => {
+    const exists = state.library.channels.some(
+      (item) => item.streamUrl === channel.streamUrl && item.name.toLowerCase() === channel.name.toLowerCase()
+    );
+
+    if (exists) {
+      return;
+    }
+
+    addImportedChannelToLibrary(channel);
+    addedCount += 1;
+  });
+
+  renderM3uChannels();
+  window.alert(`Added ${addedCount} channel${addedCount === 1 ? "" : "s"} from playlist.`);
+}
+
+async function playNetworkStreamFromForm() {
+  const networkChannel = buildNetworkChannelFromForm();
+  if (!networkChannel) {
+    return;
+  }
+
+  const loadedPlaylist = await tryLoadPlaylistFromUrl(networkChannel.streamUrl, networkChannel.groupName);
+  if (loadedPlaylist) {
+    return;
+  }
+
+  openPlayer(networkChannel);
+}
+
+async function onNetworkStreamSubmit(event) {
+  event.preventDefault();
+
+  const networkChannel = buildNetworkChannelFromForm();
+  if (!networkChannel) {
+    return;
+  }
+
+  const loadedPlaylist = await tryLoadPlaylistFromUrl(networkChannel.streamUrl, networkChannel.groupName);
+  if (loadedPlaylist) {
+    return;
+  }
+
+  addImportedChannelToLibrary(networkChannel);
+  renderM3uChannels();
+  refs.networkStreamForm.reset();
+  window.alert(`Added "${networkChannel.name}".`);
+}
+
+async function tryLoadPlaylistFromUrl(url, fallbackGroupName = "Imported") {
+  const shouldTryPlaylist = isLikelyPlaylistUrl(url);
+  if (!shouldTryPlaylist) {
+    return false;
+  }
+
+  try {
+    const response = await fetch(url, { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error("Playlist request failed");
+    }
+
+    const text = await response.text();
+    const parsedChannels = parseM3uText(text).map((channel) => ({
+      ...channel,
+      groupName: channel.groupName || fallbackGroupName || "Imported"
+    }));
+
+    if (!parsedChannels.length) {
+      return false;
+    }
+
+    state.importedM3uChannels = parsedChannels;
+    renderM3uChannels();
+    if (!refs.m3uDialog.open) {
+      refs.m3uDialog.showModal();
+    }
+    refs.m3uSummary.textContent = `${parsedChannels.length} channels loaded from URL`;
+    return true;
+  } catch {
+    window.alert(
+      "Could not load playlist URL. If this is an M3U link, the host may block CORS. You can still use it as a direct stream URL."
+    );
+    return false;
+  }
+}
+
+function isLikelyPlaylistUrl(url) {
+  return /\.m3u(8)?(\?|$)/i.test(url) || /[?&](type|format)=m3u/i.test(url);
+}
+
+function buildNetworkChannelFromForm() {
+  const streamUrl = refs.networkStreamUrl.value.trim();
+  if (!streamUrl) {
+    return null;
+  }
+
+  const titleInput = refs.networkStreamTitle.value.trim();
+  const groupName = refs.networkStreamGroup.value.trim() || "Imported";
+  const logoUrl = normalizeImageUrl(refs.networkStreamLogo.value);
+  const fallbackName = extractNameFromUrl(streamUrl) || "Network Stream";
+
+  return {
+    id: createId("network"),
+    name: titleInput || fallbackName,
+    streamUrl,
+    imageUrl: logoUrl,
+    groupName
+  };
+}
+
+function addImportedChannelToLibrary(channel, groupIdOverride = "") {
+  const groupId = groupIdOverride || ensureGroupByName(channel.groupName);
+
+  state.library.channels.push({
+    id: createId("channel"),
+    name: channel.name,
+    groupId,
+    streamUrl: channel.streamUrl,
+    imageUrl: channel.imageUrl
+  });
+
+  saveLibrary();
+  render();
+}
+
+function populateM3uGroupSelect(selectEl, preferredGroupName = "Imported") {
+  selectEl.textContent = "";
+
+  const normalizedPreferred = (preferredGroupName || "Imported").trim() || "Imported";
+  let matchedExisting = false;
+
+  state.library.groups.forEach((group) => {
+    const option = document.createElement("option");
+    option.value = `id:${group.id}`;
+    option.textContent = group.name;
+
+    if (group.name.toLowerCase() === normalizedPreferred.toLowerCase()) {
+      option.selected = true;
+      matchedExisting = true;
+    }
+
+    selectEl.appendChild(option);
+  });
+
+  if (!matchedExisting) {
+    const createOption = document.createElement("option");
+    createOption.value = `create:${normalizedPreferred}`;
+    createOption.textContent = `${normalizedPreferred} (new)`;
+    createOption.selected = true;
+    selectEl.appendChild(createOption);
+  }
+}
+
+function resolveGroupIdFromSelection(selectionValue, fallbackGroupName = "Imported") {
+  if (selectionValue.startsWith("id:")) {
+    const id = selectionValue.slice(3);
+    if (state.library.groups.some((group) => group.id === id)) {
+      return id;
+    }
+  }
+
+  if (selectionValue.startsWith("create:")) {
+    const name = selectionValue.slice(7).trim();
+    if (name) {
+      return ensureGroupByName(name);
+    }
+  }
+
+  return ensureGroupByName(fallbackGroupName);
+}
+
+function ensureGroupByName(groupName) {
+  const normalizedName = (groupName || "Imported").trim() || "Imported";
+  const existing = state.library.groups.find(
+    (group) => group.name.toLowerCase() === normalizedName.toLowerCase()
+  );
+
+  if (existing) {
+    return existing.id;
+  }
+
+  const newGroup = { id: createId("group"), name: normalizedName };
+  state.library.groups.push(newGroup);
+  return newGroup.id;
 }
 
 async function importLibrary(event) {
@@ -1077,4 +1528,24 @@ function ensureActiveChannelStillExists() {
   }
 
   playerState.activeChannel = updatedChannel;
+}
+
+function applyImageWithFallback(imageElement, imageUrl, altText) {
+  const normalizedUrl = normalizeImageUrl(imageUrl);
+
+  imageElement.alt = altText;
+  if (!normalizedUrl || failedImageUrls.has(normalizedUrl)) {
+    imageElement.removeAttribute("src");
+    return;
+  }
+
+  imageElement.src = normalizedUrl;
+  imageElement.addEventListener(
+    "error",
+    () => {
+      failedImageUrls.add(normalizedUrl);
+      imageElement.removeAttribute("src");
+    },
+    { once: true }
+  );
 }

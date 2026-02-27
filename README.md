@@ -9,6 +9,12 @@ A GitHub-friendly Progressive Web App to organize IPTV links into channel groups
 
 - Create, edit, and delete channel groups
 - Create, edit, and delete channels
+- Import M3U/M3U8 playlist files and view parsed channels
+- Submit a direct network stream URL from the import dialog
+- Add individual channels from imported playlist
+- Add all channels from imported playlist in one click
+- Mini-play channels directly from imported playlist without adding first
+- Choose target group per imported channel before adding
 - Store channel details:
   - Channel name
   - Group
@@ -84,6 +90,7 @@ Library exports use this JSON shape:
 - Data is stored in browser local storage.
 - Image links can be any public internet image URL (`https://...`).
 - Channel cards open in the in-app player. Use **Open External** for a direct link.
+- M3U import picks channel title from `tvg-name`, `EXTINF` title, then URL fallback.
 - Clicking outside the player dialog minimizes it to a floating tile (stream keeps playing) so you can browse/select another stream.
 - Browser playback requires stream servers to allow CORS (`Access-Control-Allow-Origin`). If blocked, use **Open External** or **Cast**.
 - Double-click a group in the sidebar to edit it.

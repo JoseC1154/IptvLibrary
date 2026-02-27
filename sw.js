@@ -1,4 +1,4 @@
-const CACHE_NAME = "iptv-library-cache-v2";
+const CACHE_NAME = "iptv-library-cache-v3";
 const ASSETS = [
   "./",
   "./index.html",
@@ -48,19 +48,14 @@ self.addEventListener("fetch", (event) => {
 
   if (isAppAsset(requestUrl)) {
     event.respondWith(
-      caches.match(event.request).then((cached) => {
-        if (cached) {
-          return cached;
-        }
-
-        return fetch(event.request)
-          .then((networkResponse) => {
-            const copy = networkResponse.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
-            return networkResponse;
-          })
-          .catch(() => caches.match("./index.html"));
-      })
+      fetch(event.request)
+        .then((networkResponse) => {
+          const copy = networkResponse.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+          return networkResponse;
+        })
+        .catch(() => caches.match(event.request))
+        .catch(() => caches.match("./index.html"))
     );
     return;
   }
