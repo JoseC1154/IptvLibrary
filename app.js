@@ -12,14 +12,14 @@ const seedData = {
       id: "ch-cartoon",
       name: "Cartoon Mix",
       groupId: "group-kids",
-      streamUrl: "https://example.com/cartoon.m3u8",
+      streamUrl: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
       imageUrl: "https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?auto=format&fit=crop&w=800&q=80"
     },
     {
       id: "ch-cinema",
       name: "Cinema Plus",
       groupId: "group-movies",
-      streamUrl: "https://example.com/cinema.m3u8",
+      streamUrl: "https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8",
       imageUrl: "https://images.unsplash.com/photo-1478720568477-152d9b164e26?auto=format&fit=crop&w=800&q=80"
     }
   ]
@@ -28,6 +28,13 @@ const seedData = {
 const state = {
   library: loadLibrary(),
   selectedGroupId: "all"
+};
+
+const playerState = {
+  activeChannel: null,
+  hlsInstance: null,
+  chromecastReady: false,
+  stallRecoveryTimer: null
 };
 
 const refs = {
@@ -57,7 +64,27 @@ const refs = {
   channelImageFeedback: document.getElementById("channelImageFeedback"),
   channelImagePreview: document.getElementById("channelImagePreview"),
   deleteChannelBtn: document.getElementById("deleteChannelBtn"),
-  channelCardTemplate: document.getElementById("channelCardTemplate")
+  channelCardTemplate: document.getElementById("channelCardTemplate"),
+  playerDialog: document.getElementById("playerDialog"),
+  playerTitle: document.getElementById("playerTitle"),
+  playerSubtitle: document.getElementById("playerSubtitle"),
+  playerVideoHost: document.getElementById("playerVideoHost"),
+  playerVideo: document.getElementById("playerVideo"),
+  playerStatus: document.getElementById("playerStatus"),
+  playerCastBtn: document.getElementById("playerCastBtn"),
+  playerSystemBtn: document.getElementById("playerSystemBtn"),
+  playerOpenExternal: document.getElementById("playerOpenExternal"),
+  playerCloseBtn: document.getElementById("playerCloseBtn"),
+  playerStopBtn: document.getElementById("playerStopBtn"),
+  nowPlayingBar: document.getElementById("nowPlayingBar"),
+  nowPlayingTitle: document.getElementById("nowPlayingTitle"),
+  nowPlayingSubtitle: document.getElementById("nowPlayingSubtitle"),
+  nowPlayingOpenBtn: document.getElementById("nowPlayingOpenBtn"),
+  nowPlayingCastBtn: document.getElementById("nowPlayingCastBtn"),
+  miniPlayer: document.getElementById("miniPlayer"),
+  miniPlayerVideoHost: document.getElementById("miniPlayerVideoHost"),
+  miniPlayerRestoreBtn: document.getElementById("miniPlayerRestoreBtn"),
+  miniPlayerStopBtn: document.getElementById("miniPlayerStopBtn")
 };
 
 initialize();
@@ -65,6 +92,8 @@ initialize();
 function initialize() {
   bindEvents();
   render();
+  updateNowPlayingBar();
+  initializeCastSupport();
   registerServiceWorker();
 }
 
@@ -82,6 +111,31 @@ function bindEvents() {
 
   refs.deleteGroupBtn.addEventListener("click", deleteCurrentGroup);
   refs.deleteChannelBtn.addEventListener("click", deleteCurrentChannel);
+  refs.playerCastBtn.addEventListener("click", onPlayerCastClick);
+  refs.playerSystemBtn.addEventListener("click", onSystemPlayerClick);
+  refs.playerCloseBtn.addEventListener("click", minimizePlayer);
+  refs.playerStopBtn.addEventListener("click", stopPlayer);
+  refs.nowPlayingOpenBtn.addEventListener("click", openActiveChannelInPlayer);
+  refs.nowPlayingCastBtn.addEventListener("click", onPlayerCastClick);
+  refs.miniPlayerRestoreBtn.addEventListener("click", openActiveChannelInPlayer);
+  refs.miniPlayerStopBtn.addEventListener("click", stopPlayer);
+  refs.playerDialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    minimizePlayer();
+  });
+  refs.playerDialog.addEventListener("click", (event) => {
+    if (event.target === refs.playerDialog) {
+      minimizePlayer();
+    }
+  });
+  refs.playerVideo.addEventListener("error", () => {
+    setPlayerStatus(
+      "Playback failed. This stream may be blocked by CORS, georestrictions, or unsupported format. Try Open External or Cast.",
+      "error"
+    );
+  });
+  refs.playerVideo.addEventListener("waiting", tryRecoverPlayback);
+  refs.playerVideo.addEventListener("stalled", tryRecoverPlayback);
 
   document.querySelectorAll("[data-close]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -92,8 +146,10 @@ function bindEvents() {
 }
 
 function render() {
+  ensureActiveChannelStillExists();
   renderGroups();
   renderChannels();
+  updateNowPlayingBar();
 }
 
 function renderGroups() {
@@ -155,6 +211,14 @@ function renderChannels() {
 
     editBtn.addEventListener("click", () => openChannelDialog(channel.id));
     link.href = channel.streamUrl;
+    link.addEventListener("click", (event) => {
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+        return;
+      }
+
+      event.preventDefault();
+      openPlayer(channel);
+    });
 
     if (channel.imageUrl) {
       image.src = channel.imageUrl;
@@ -315,16 +379,18 @@ async function onChannelSubmit(event) {
   }
 
   if (payload.imageUrl) {
-    const imageIsReachable = await validateImageUrlReachable(payload.imageUrl);
-    if (!imageIsReachable) {
+    const resolvedImageUrl = await resolveWorkingImageUrl(payload.imageUrl);
+    if (!resolvedImageUrl) {
       setImageFeedback("Image URL could not be reached. Please use a valid public internet image URL.", "error");
       setImagePreview("");
       refs.channelImage.focus();
       return;
     }
 
+    payload.imageUrl = resolvedImageUrl;
+    refs.channelImage.value = resolvedImageUrl;
     setImageFeedback("Image URL looks good.", "success");
-    setImagePreview(payload.imageUrl);
+    setImagePreview(resolvedImageUrl);
   } else {
     setImageFeedback("");
     setImagePreview("");
@@ -360,7 +426,15 @@ function deleteCurrentChannel() {
     return;
   }
 
+  const isActiveChannel = playerState.activeChannel?.id === channel.id;
+
   state.library.channels = state.library.channels.filter((item) => item.id !== channelId);
+
+  if (isActiveChannel) {
+    playerState.activeChannel = null;
+    stopPlayer();
+  }
+
   saveLibrary();
   refs.channelDialog.close();
   render();
@@ -499,15 +573,21 @@ async function validateImageFieldInline() {
     return;
   }
 
-  const imageIsReachable = await validateImageUrlReachable(normalizedUrl);
-  if (!imageIsReachable) {
+  const resolvedImageUrl = await resolveWorkingImageUrl(normalizedUrl);
+  if (!resolvedImageUrl) {
     setImageFeedback("Image URL could not be reached.", "error");
     setImagePreview("");
     return;
   }
 
-  setImageFeedback("Image URL looks good.", "success");
-  setImagePreview(normalizedUrl);
+  if (resolvedImageUrl !== normalizedUrl) {
+    refs.channelImage.value = resolvedImageUrl;
+    setImageFeedback("Image URL auto-corrected and validated.", "success");
+  } else {
+    setImageFeedback("Image URL looks good.", "success");
+  }
+
+  setImagePreview(resolvedImageUrl);
 }
 
 function validateImageUrlReachable(url, timeoutMs = 5000) {
@@ -540,6 +620,37 @@ function validateImageUrlReachable(url, timeoutMs = 5000) {
 
     image.src = url;
   });
+}
+
+async function resolveWorkingImageUrl(url) {
+  const candidates = buildImageUrlCandidates(url);
+
+  for (const candidate of candidates) {
+    const reachable = await validateImageUrlReachable(candidate);
+    if (reachable) {
+      return candidate;
+    }
+  }
+
+  return "";
+}
+
+function buildImageUrlCandidates(url) {
+  const trimmedToExtension = trimToImageExtension(url);
+  const candidates = [];
+
+  if (trimmedToExtension && trimmedToExtension !== url) {
+    candidates.push(trimmedToExtension, url);
+    return candidates;
+  }
+
+  candidates.push(url);
+  return candidates;
+}
+
+function trimToImageExtension(url) {
+  const match = url.match(/^(https?:\/\/[^?#]+?\.(?:png|jpe?g|gif|webp|avif|svg))/i);
+  return match ? match[1] : "";
 }
 
 function setImageFeedback(message, type = "") {
@@ -577,4 +688,393 @@ async function registerServiceWorker() {
   } catch {
     // no-op
   }
+}
+
+function openPlayer(channel) {
+  if (!channel?.streamUrl) {
+    return;
+  }
+
+  playerState.activeChannel = channel;
+  updateNowPlayingBar();
+  refs.playerTitle.textContent = channel.name;
+
+  const groupName = state.library.groups.find((group) => group.id === channel.groupId)?.name ?? "Channel";
+  refs.playerSubtitle.textContent = groupName;
+  refs.playerOpenExternal.href = channel.streamUrl;
+
+  setPlayerStatus("");
+  updateCastButtonVisibility();
+  moveVideoToDialogHost();
+  refs.miniPlayer.classList.add("hidden");
+
+  if (!refs.playerDialog.open) {
+    refs.playerDialog.showModal();
+  }
+
+  startVideoPlayback(channel.streamUrl);
+}
+
+function stopPlayer() {
+  clearStallRecoveryTimer();
+  destroyHlsInstance();
+  refs.playerVideo.pause();
+  refs.playerVideo.removeAttribute("src");
+  refs.playerVideo.load();
+  moveVideoToDialogHost();
+  refs.miniPlayer.classList.add("hidden");
+  playerState.activeChannel = null;
+  updateNowPlayingBar();
+  setPlayerStatus("");
+
+  if (refs.playerDialog.open) {
+    refs.playerDialog.close();
+  }
+}
+
+function minimizePlayer() {
+  if (!playerState.activeChannel) {
+    if (refs.playerDialog.open) {
+      refs.playerDialog.close();
+    }
+    return;
+  }
+
+  moveVideoToMiniHost();
+  refs.miniPlayer.classList.remove("hidden");
+
+  if (refs.playerDialog.open) {
+    refs.playerDialog.close();
+  }
+}
+
+function openActiveChannelInPlayer() {
+  if (!playerState.activeChannel) {
+    return;
+  }
+
+  openPlayer(playerState.activeChannel);
+}
+
+function startVideoPlayback(streamUrl) {
+  clearStallRecoveryTimer();
+  destroyHlsInstance();
+  refs.playerVideo.pause();
+  refs.playerVideo.removeAttribute("src");
+  refs.playerVideo.load();
+
+  if (isLikelyHlsStream(streamUrl) && window.Hls?.isSupported?.()) {
+    const hlsInstance = new window.Hls({
+      enableWorker: true,
+      lowLatencyMode: false,
+      startPosition: -1,
+      backBufferLength: 90,
+      maxBufferLength: 30,
+      maxMaxBufferLength: 60,
+      liveSyncDurationCount: 3,
+      liveMaxLatencyDurationCount: 10,
+      manifestLoadingTimeOut: 15000,
+      levelLoadingTimeOut: 15000,
+      fragLoadingTimeOut: 20000,
+      manifestLoadingMaxRetry: 6,
+      levelLoadingMaxRetry: 6,
+      fragLoadingMaxRetry: 6
+    });
+
+    hlsInstance.loadSource(streamUrl);
+    hlsInstance.attachMedia(refs.playerVideo);
+    hlsInstance.on(window.Hls.Events.MANIFEST_PARSED, () => {
+      if (Number.isFinite(hlsInstance.liveSyncPosition)) {
+        refs.playerVideo.currentTime = hlsInstance.liveSyncPosition;
+      }
+
+      refs.playerVideo.play().catch(() => {
+        setPlayerStatus("Press play to start the stream.");
+      });
+    });
+    hlsInstance.on(window.Hls.Events.ERROR, (_event, data) => {
+      const details = `${data?.details ?? ""}`.toLowerCase();
+      const corsLike = details.includes("xhr") || details.includes("network") || details.includes("manifest");
+
+      if (data?.fatal) {
+        if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR) {
+          setPlayerStatus("Network interruption detected. Attempting stream recovery...");
+          hlsInstance.startLoad();
+          return;
+        }
+
+        if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR) {
+          setPlayerStatus("Media decode issue detected. Attempting recovery...");
+          hlsInstance.recoverMediaError();
+          return;
+        }
+
+        if (corsLike) {
+          setPlayerStatus(
+            "Unable to play in-browser (likely CORS or network restriction). Try Open External/Cast or use a stream that sends Access-Control-Allow-Origin.",
+            "error"
+          );
+          return;
+        }
+
+        setPlayerStatus("Unable to play this stream in browser.", "error");
+        return;
+      }
+
+      if (data?.details === window.Hls.ErrorDetails.BUFFER_STALLED_ERROR) {
+        setPlayerStatus("Buffer stalled. Attempting to continue playback...");
+        hlsInstance.startLoad();
+      }
+    });
+
+    playerState.hlsInstance = hlsInstance;
+    return;
+  }
+
+  refs.playerVideo.src = streamUrl;
+  refs.playerVideo.preload = "auto";
+  refs.playerVideo.play().catch(() => {
+    setPlayerStatus("Press play to start the stream.");
+  });
+}
+
+function destroyHlsInstance() {
+  if (playerState.hlsInstance) {
+    playerState.hlsInstance.destroy();
+    playerState.hlsInstance = null;
+  }
+}
+
+function tryRecoverPlayback() {
+  if (!playerState.activeChannel) {
+    return;
+  }
+
+  clearStallRecoveryTimer();
+  playerState.stallRecoveryTimer = window.setTimeout(() => {
+    if (playerState.hlsInstance) {
+      playerState.hlsInstance.startLoad();
+    }
+
+    refs.playerVideo.play().catch(() => {
+      setPlayerStatus("Playback paused while buffering. Press play to continue.");
+    });
+  }, 1200);
+}
+
+function clearStallRecoveryTimer() {
+  if (playerState.stallRecoveryTimer) {
+    window.clearTimeout(playerState.stallRecoveryTimer);
+    playerState.stallRecoveryTimer = null;
+  }
+}
+
+function isLikelyHlsStream(url) {
+  return /\.m3u8($|\?)/i.test(url);
+}
+
+function setPlayerStatus(message, type = "") {
+  refs.playerStatus.textContent = message;
+  refs.playerStatus.classList.remove("hidden", "error", "success");
+
+  if (!message) {
+    refs.playerStatus.classList.add("hidden");
+    return;
+  }
+
+  if (type) {
+    refs.playerStatus.classList.add(type);
+  }
+}
+
+function initializeCastSupport() {
+  window.__onGCastApiAvailable = (isAvailable) => {
+    if (!isAvailable) {
+      return;
+    }
+
+    try {
+      cast.framework.CastContext.getInstance().setOptions({
+        receiverApplicationId: chrome.cast.media.DEFAULT_MEDIA_RECEIVER_APP_ID,
+        autoJoinPolicy: chrome.cast.AutoJoinPolicy.ORIGIN_SCOPED
+      });
+      playerState.chromecastReady = true;
+      updateCastButtonVisibility();
+    } catch {
+      playerState.chromecastReady = false;
+      updateCastButtonVisibility();
+    }
+  };
+
+  if (window.cast?.framework && window.chrome?.cast) {
+    window.__onGCastApiAvailable(true);
+  } else {
+    updateCastButtonVisibility();
+  }
+}
+
+async function onPlayerCastClick() {
+  if (!playerState.activeChannel?.streamUrl) {
+    window.alert("Open a channel first.");
+    return;
+  }
+
+  if (playerState.chromecastReady) {
+    try {
+      await castToChromecast(playerState.activeChannel);
+      setPlayerStatus("Casting to Chromecast device.", "success");
+      return;
+    } catch {
+      setPlayerStatus("Chromecast failed. Trying browser device picker...", "error");
+    }
+  }
+
+  if (refs.playerVideo.remote?.prompt) {
+    try {
+      await refs.playerVideo.remote.prompt();
+      return;
+    } catch {
+      // no-op
+    }
+  }
+
+  if (typeof refs.playerVideo.webkitShowPlaybackTargetPicker === "function") {
+    refs.playerVideo.webkitShowPlaybackTargetPicker();
+    return;
+  }
+
+  await handoffToSystemPlayer(playerState.activeChannel.streamUrl);
+  setPlayerStatus("Attempted system-player handoff. Use your computer's native casting routes/devices.", "success");
+}
+
+async function onSystemPlayerClick() {
+  if (!playerState.activeChannel?.streamUrl) {
+    window.alert("Open a channel first.");
+    return;
+  }
+
+  await handoffToSystemPlayer(playerState.activeChannel.streamUrl);
+  setPlayerStatus("Attempted to open in system player.", "success");
+}
+
+async function handoffToSystemPlayer(streamUrl) {
+  const vlcUrl = `vlc://${streamUrl.replace(/^https?:\/\//i, "")}`;
+
+  try {
+    window.location.href = vlcUrl;
+  } catch {
+    // no-op
+  }
+
+  if (navigator.share) {
+    try {
+      await navigator.share({
+        title: playerState.activeChannel?.name ?? "IPTV Stream",
+        text: "Open this stream in a system media player",
+        url: streamUrl
+      });
+      return;
+    } catch {
+      // no-op
+    }
+  }
+
+  window.open(streamUrl, "_blank", "noopener,noreferrer");
+}
+
+async function castToChromecast(channel) {
+  const context = cast.framework.CastContext.getInstance();
+  let session = context.getCurrentSession();
+
+  if (!session) {
+    await context.requestSession();
+    session = context.getCurrentSession();
+  }
+
+  if (!session) {
+    throw new Error("No active cast session");
+  }
+
+  const mimeType = detectMimeType(channel.streamUrl);
+  const mediaInfo = new chrome.cast.media.MediaInfo(channel.streamUrl, mimeType);
+  const metadata = new chrome.cast.media.GenericMediaMetadata();
+  metadata.title = channel.name;
+
+  if (channel.imageUrl) {
+    metadata.images = [new chrome.cast.Image(channel.imageUrl)];
+  }
+
+  mediaInfo.metadata = metadata;
+
+  const request = new chrome.cast.media.LoadRequest(mediaInfo);
+  request.autoplay = true;
+  await session.loadMedia(request);
+}
+
+function detectMimeType(url) {
+  if (/\.m3u8($|\?)/i.test(url)) {
+    return "application/vnd.apple.mpegurl";
+  }
+
+  if (/\.mpd($|\?)/i.test(url)) {
+    return "application/dash+xml";
+  }
+
+  if (/\.mp4($|\?)/i.test(url)) {
+    return "video/mp4";
+  }
+
+  return "video/*";
+}
+
+function updateCastButtonVisibility() {
+  const canUseRemotePlayback = !!refs.playerVideo.remote?.prompt;
+  const canUseAirPlayPicker = typeof refs.playerVideo.webkitShowPlaybackTargetPicker === "function";
+  const available = playerState.chromecastReady || canUseRemotePlayback || canUseAirPlayPicker;
+
+  refs.playerCastBtn.classList.toggle("hidden", !available);
+  refs.nowPlayingCastBtn.classList.toggle("hidden", !available);
+}
+
+function updateNowPlayingBar() {
+  const channel = playerState.activeChannel;
+
+  if (!channel) {
+    refs.nowPlayingBar.classList.add("hidden");
+    refs.miniPlayer.classList.add("hidden");
+    refs.nowPlayingTitle.textContent = "Now Playing";
+    refs.nowPlayingSubtitle.textContent = "No channel selected";
+    return;
+  }
+
+  const groupName = state.library.groups.find((group) => group.id === channel.groupId)?.name ?? "Channel";
+  refs.nowPlayingTitle.textContent = channel.name;
+  refs.nowPlayingSubtitle.textContent = groupName;
+  refs.nowPlayingBar.classList.remove("hidden");
+}
+
+function moveVideoToDialogHost() {
+  if (refs.playerVideo.parentElement !== refs.playerVideoHost) {
+    refs.playerVideoHost.appendChild(refs.playerVideo);
+  }
+}
+
+function moveVideoToMiniHost() {
+  if (refs.playerVideo.parentElement !== refs.miniPlayerVideoHost) {
+    refs.miniPlayerVideoHost.appendChild(refs.playerVideo);
+  }
+}
+
+function ensureActiveChannelStillExists() {
+  if (!playerState.activeChannel) {
+    return;
+  }
+
+  const updatedChannel = state.library.channels.find((channel) => channel.id === playerState.activeChannel.id);
+  if (!updatedChannel) {
+    stopPlayer();
+    return;
+  }
+
+  playerState.activeChannel = updatedChannel;
 }

@@ -12,6 +12,13 @@ A GitHub-friendly Progressive Web App to organize IPTV links into channel groups
   - IPTV link URL
   - Custom photo URL (internet URL)
 - Browse by group: click a group to see its channel list
+- Built-in media player for channels
+- Sticky mini "Now Playing" bar with quick Play and Cast actions
+- Floating minimized video tile (keeps stream playing while browsing)
+- Cast support:
+  - Chromecast (when available in browser/network)
+  - Browser device picker / AirPlay fallback where supported
+  - System player handoff (for native device routing/casting outside browser)
 - Export your full library to JSON
 - Import library from JSON
 - Works offline after first load (service worker)
@@ -73,5 +80,8 @@ Library exports use this JSON shape:
 
 - Data is stored in browser local storage.
 - Image links can be any public internet image URL (`https://...`).
+- Channel cards open in the in-app player. Use **Open External** for a direct link.
+- Clicking outside the player dialog minimizes it to a floating tile (stream keeps playing) so you can browse/select another stream.
+- Browser playback requires stream servers to allow CORS (`Access-Control-Allow-Origin`). If blocked, use **Open External** or **Cast**.
 - Double-click a group in the sidebar to edit it.
 - Click **Edit** on any channel card to update or remove it.

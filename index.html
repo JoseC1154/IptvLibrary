@@ -49,6 +49,17 @@
           <p id="emptyState" class="empty-state hidden">No channels yet. Add one to get started.</p>
         </section>
       </main>
+
+      <section id="nowPlayingBar" class="now-playing glass hidden" aria-live="polite">
+        <div class="now-playing-info">
+          <h3 id="nowPlayingTitle">Now Playing</h3>
+          <p id="nowPlayingSubtitle">No channel selected</p>
+        </div>
+        <div class="now-playing-actions">
+          <button id="nowPlayingOpenBtn" class="btn primary" type="button">Play</button>
+          <button id="nowPlayingCastBtn" class="btn hidden" type="button">Cast</button>
+        </div>
+      </section>
     </div>
 
     <dialog id="groupDialog" class="dialog glass">
@@ -104,6 +115,46 @@
       </form>
     </dialog>
 
+    <dialog id="playerDialog" class="dialog player-dialog glass">
+      <div class="player-shell">
+        <div class="player-head">
+          <div>
+            <h3 id="playerTitle">Channel Player</h3>
+            <p id="playerSubtitle">Select a channel to start playback.</p>
+          </div>
+        </div>
+
+        <div id="playerVideoHost" class="player-video-host">
+          <video
+            id="playerVideo"
+            class="player-video"
+            controls
+            playsinline
+            webkit-playsinline="true"
+            x-webkit-airplay="allow"
+          ></video>
+        </div>
+
+        <p id="playerStatus" class="field-feedback hidden" role="status" aria-live="polite"></p>
+
+        <div class="dialog-actions">
+          <button id="playerCastBtn" type="button" class="btn hidden">Cast</button>
+          <button id="playerSystemBtn" type="button" class="btn">System Player</button>
+          <a id="playerOpenExternal" class="btn" target="_blank" rel="noopener noreferrer">Open External</a>
+          <button id="playerStopBtn" type="button" class="btn danger">Stop</button>
+          <button id="playerCloseBtn" type="button" class="btn">Minimize</button>
+        </div>
+      </div>
+    </dialog>
+
+    <section id="miniPlayer" class="mini-player glass hidden" aria-live="polite">
+      <div id="miniPlayerVideoHost" class="mini-player-video-host"></div>
+      <div class="mini-player-actions">
+        <button id="miniPlayerRestoreBtn" type="button" class="btn tiny">Restore</button>
+        <button id="miniPlayerStopBtn" type="button" class="btn tiny danger">Stop</button>
+      </div>
+    </section>
+
     <template id="channelCardTemplate">
       <article class="channel-card glass">
         <button class="card-edit btn tiny" type="button">Edit</button>
@@ -117,6 +168,8 @@
       </article>
     </template>
 
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.18/dist/hls.min.js" defer></script>
+    <script src="https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1" async defer></script>
     <script src="app.js" type="module"></script>
   </body>
 </html>

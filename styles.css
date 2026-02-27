@@ -213,6 +213,32 @@ p {
   color: var(--text-1);
 }
 
+.now-playing {
+  position: sticky;
+  bottom: 10px;
+  z-index: 20;
+  border-radius: 16px;
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.now-playing-info h3 {
+  font-size: 0.95rem;
+}
+
+.now-playing-info p {
+  font-size: 0.82rem;
+  color: var(--text-1);
+}
+
+.now-playing-actions {
+  display: flex;
+  gap: 8px;
+}
+
 .btn {
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.06);
@@ -294,6 +320,71 @@ p {
   border-radius: 10px;
   border: 1px solid var(--border);
   background: linear-gradient(140deg, #1f2f57, #0d1528);
+}
+
+.player-dialog {
+  width: min(980px, calc(100vw - 30px));
+}
+
+.player-shell {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+
+.player-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.player-head h3 {
+  font-size: 1.1rem;
+}
+
+.player-head p {
+  color: var(--text-1);
+  font-size: 0.86rem;
+}
+
+.player-video {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: #000;
+}
+
+.player-shell .dialog-actions {
+  flex-wrap: wrap;
+}
+
+.player-video-host,
+.mini-player-video-host {
+  width: 100%;
+}
+
+.mini-player {
+  position: fixed;
+  right: 16px;
+  bottom: 20px;
+  z-index: 30;
+  width: min(360px, calc(100vw - 28px));
+  border-radius: 14px;
+  padding: 10px;
+  display: grid;
+  gap: 10px;
+}
+
+.mini-player .player-video {
+  border-radius: 10px;
+}
+
+.mini-player-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 input,
