@@ -157,10 +157,6 @@
           </div>
         </div>
 
-        <div class="m3u-search-wrap">
-          <input id="m3uSearchInput" type="search" placeholder="Search channels, groups, or URL..." />
-        </div>
-
         <form id="networkStreamForm" class="network-stream-form glass">
           <h4>Add Network Stream URL</h4>
           <div class="network-import-row">
@@ -178,6 +174,10 @@
           </div>
         </form>
 
+        <div id="m3uSearchWrap" class="m3u-search-wrap hidden">
+          <input id="m3uSearchInput" type="search" placeholder="Search channels, groups, or URL..." />
+        </div>
+
         <div id="m3uList" class="m3u-list"></div>
         <p id="m3uEmpty" class="field-feedback">Import an M3U/M3U8 file to view channels.</p>
 
@@ -189,7 +189,6 @@
     </dialog>
 
     <section id="miniPlayer" class="mini-player glass hidden" aria-live="polite">
-      <div id="miniPlayerDragHandle" class="mini-player-drag" role="button" aria-label="Drag mini player">Drag</div>
       <div id="miniPlayerVideoHost" class="mini-player-video-host"></div>
       <div class="mini-player-actions">
         <button id="miniPlayerRestoreBtn" type="button" class="btn tiny">Restore</button>

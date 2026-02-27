@@ -42,7 +42,12 @@ const playerState = {
     active: false,
     pointerId: null,
     offsetX: 0,
-    offsetY: 0
+    offsetY: 0,
+    holdTimer: null,
+    pending: false,
+    startClientX: 0,
+    startClientY: 0,
+    initialized: false
   }
 };
 
@@ -96,12 +101,12 @@ const refs = {
   nowPlayingOpenBtn: document.getElementById("nowPlayingOpenBtn"),
   nowPlayingCastBtn: document.getElementById("nowPlayingCastBtn"),
   miniPlayer: document.getElementById("miniPlayer"),
-  miniPlayerDragHandle: document.getElementById("miniPlayerDragHandle"),
   miniPlayerVideoHost: document.getElementById("miniPlayerVideoHost"),
   miniPlayerRestoreBtn: document.getElementById("miniPlayerRestoreBtn"),
   miniPlayerStopBtn: document.getElementById("miniPlayerStopBtn"),
   m3uDialog: document.getElementById("m3uDialog"),
   m3uSummary: document.getElementById("m3uSummary"),
+  m3uSearchWrap: document.getElementById("m3uSearchWrap"),
   m3uSearchInput: document.getElementById("m3uSearchInput"),
   m3uList: document.getElementById("m3uList"),
   m3uEmpty: document.getElementById("m3uEmpty"),
@@ -164,7 +169,7 @@ function bindEvents() {
   refs.nowPlayingCastBtn.addEventListener("click", onPlayerCastClick);
   refs.miniPlayerRestoreBtn.addEventListener("click", openActiveChannelInPlayer);
   refs.miniPlayerStopBtn.addEventListener("click", stopPlayer);
-  refs.miniPlayerDragHandle.addEventListener("pointerdown", startMiniPlayerDrag);
+  refs.miniPlayer.addEventListener("pointerdown", startMiniPlayerDrag);
   window.addEventListener("pointermove", onMiniPlayerDragMove);
   window.addEventListener("pointerup", endMiniPlayerDrag);
   window.addEventListener("pointercancel", endMiniPlayerDrag);
@@ -660,6 +665,8 @@ function extractNameFromUrl(url) {
 
 function renderM3uChannels() {
   const channels = state.importedM3uChannels;
+  refs.m3uSearchWrap.classList.toggle("hidden", channels.length === 0);
+
   const filteredChannels = state.m3uSearchQuery
     ? channels.filter((channel) => {
       const haystack = `${channel.name} ${channel.groupName} ${channel.streamUrl}`.toLowerCase();
@@ -1540,25 +1547,71 @@ function startMiniPlayerDrag(event) {
     return;
   }
 
+  if (event.target.closest("button, a, input, select, textarea, label, video")) {
+    return;
+  }
+
+  const dragState = playerState.miniPlayerDrag;
+  clearMiniPlayerHoldTimer();
+
+  dragState.pending = true;
+  dragState.pointerId = event.pointerId;
+  dragState.startClientX = event.clientX;
+  dragState.startClientY = event.clientY;
+
+  const delay = event.pointerType === "touch" ? 180 : 0;
+  if (delay === 0) {
+    activateMiniPlayerDrag(event.clientX, event.clientY, event.pointerId);
+    return;
+  }
+
+  dragState.holdTimer = window.setTimeout(() => {
+    activateMiniPlayerDrag(dragState.startClientX, dragState.startClientY, event.pointerId);
+  }, delay);
+}
+
+function activateMiniPlayerDrag(clientX, clientY, pointerId) {
+  const dragState = playerState.miniPlayerDrag;
+  if (!dragState.pending || dragState.pointerId !== pointerId) {
+    return;
+  }
+
   const rect = refs.miniPlayer.getBoundingClientRect();
-  playerState.miniPlayerDrag.active = true;
-  playerState.miniPlayerDrag.pointerId = event.pointerId;
-  playerState.miniPlayerDrag.offsetX = event.clientX - rect.left;
-  playerState.miniPlayerDrag.offsetY = event.clientY - rect.top;
+  dragState.active = true;
+  dragState.pending = false;
+  dragState.offsetX = clientX - rect.left;
+  dragState.offsetY = clientY - rect.top;
+  dragState.initialized = false;
 
   refs.miniPlayer.classList.add("dragging");
-  refs.miniPlayer.style.left = `${rect.left}px`;
-  refs.miniPlayer.style.top = `${rect.top}px`;
-  refs.miniPlayer.style.right = "auto";
-  refs.miniPlayer.style.bottom = "auto";
 
-  refs.miniPlayerDragHandle.setPointerCapture(event.pointerId);
+  refs.miniPlayer.setPointerCapture(pointerId);
 }
 
 function onMiniPlayerDragMove(event) {
   const dragState = playerState.miniPlayerDrag;
+  if (dragState.pending && dragState.pointerId === event.pointerId) {
+    const movedX = Math.abs(event.clientX - dragState.startClientX);
+    const movedY = Math.abs(event.clientY - dragState.startClientY);
+    if (movedX > 8 || movedY > 8) {
+      clearMiniPlayerHoldTimer();
+      dragState.pending = false;
+      dragState.pointerId = null;
+    }
+    return;
+  }
+
   if (!dragState.active || dragState.pointerId !== event.pointerId) {
     return;
+  }
+
+  if (!dragState.initialized) {
+    const rect = refs.miniPlayer.getBoundingClientRect();
+    refs.miniPlayer.style.left = `${rect.left}px`;
+    refs.miniPlayer.style.top = `${rect.top}px`;
+    refs.miniPlayer.style.right = "auto";
+    refs.miniPlayer.style.bottom = "auto";
+    dragState.initialized = true;
   }
 
   const miniRect = refs.miniPlayer.getBoundingClientRect();
@@ -1574,13 +1627,30 @@ function onMiniPlayerDragMove(event) {
 
 function endMiniPlayerDrag(event) {
   const dragState = playerState.miniPlayerDrag;
+  if (dragState.pending && dragState.pointerId === event.pointerId) {
+    clearMiniPlayerHoldTimer();
+    dragState.pending = false;
+    dragState.pointerId = null;
+    return;
+  }
+
   if (!dragState.active || dragState.pointerId !== event.pointerId) {
     return;
   }
 
+  clearMiniPlayerHoldTimer();
   dragState.active = false;
   dragState.pointerId = null;
+  dragState.initialized = false;
   refs.miniPlayer.classList.remove("dragging");
+}
+
+function clearMiniPlayerHoldTimer() {
+  const dragState = playerState.miniPlayerDrag;
+  if (dragState.holdTimer) {
+    window.clearTimeout(dragState.holdTimer);
+    dragState.holdTimer = null;
+  }
 }
 
 function resetMiniPlayerPosition() {
