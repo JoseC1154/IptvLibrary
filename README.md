@@ -1,4 +1,7 @@
-# IPTV Library PWA
+# Public Link
+https://josec1154.github.io/IptvLibrary/
+
+# IPTV Library PWA 
 
 A GitHub-friendly Progressive Web App to organize IPTV links into channel groups (for example: Kids Channel, Movie Channel) with an Apple TV–style library view.
 
