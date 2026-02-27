@@ -372,6 +372,11 @@ p {
   overflow: auto;
 }
 
+.m3u-list-actions {
+  display: flex;
+  justify-content: center;
+}
+
 .m3u-search-wrap {
   display: grid;
 }
@@ -495,13 +500,13 @@ p {
   padding: 10px;
   display: grid;
   gap: 10px;
-  background: linear-gradient(180deg, rgba(10, 15, 30, 0.9), rgba(10, 15, 30, 0.78));
+  background: linear-gradient(180deg, rgba(100, 100, 100, 0.30), rgba(70, 70, 70, 0.20));
   -webkit-backdrop-filter: blur(48px) saturate(140%);
   backdrop-filter: blur(48px) saturate(140%);
 }
 
 #miniPlayer {
-  background: linear-gradient(180deg, rgba(8, 12, 24, 0.94), rgba(8, 12, 24, 0.84));
+  background: linear-gradient(180deg, rgba(100, 100, 100, 0.30), rgba(70, 70, 70, 0.20));
   -webkit-backdrop-filter: blur(58px) saturate(145%);
   backdrop-filter: blur(58px) saturate(145%);
 }
