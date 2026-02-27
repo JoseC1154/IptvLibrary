@@ -3,8 +3,11 @@ const APP_VERSION = 1;
 const HLS_CDN_URL = "https://cdn.jsdelivr.net/npm/hls.js@1.5.18/dist/hls.min.js";
 const BLOCKED_STREAMS_KEY = "iptv-browser-blocked-streams-v1";
 const CHANNEL_SCAN_RESULTS_KEY = "iptv-channel-scan-results-v1";
+const IMPORTED_M3U_STATE_KEY = "iptv-imported-m3u-state-v1";
 const CHANNEL_SCAN_TIMEOUT_MS = 8000;
 const CHANNEL_SCAN_CONCURRENCY = 4;
+
+const persistedImportedM3uState = loadImportedM3uState();
 
 const seedData = {
   version: APP_VERSION,
@@ -33,10 +36,11 @@ const seedData = {
 const state = {
   library: loadLibrary(),
   selectedGroupId: "all",
-  importedM3uChannels: [],
-  importedM3uScanResults: new Map(),
+  importedM3uChannels: persistedImportedM3uState.channels,
+  importedM3uScanResults: persistedImportedM3uState.scanResults,
   lastPreviewedM3uId: "",
-  m3uSearchQuery: "",
+  m3uSearchQuery: persistedImportedM3uState.searchQuery,
+  m3uScanFilter: persistedImportedM3uState.scanFilter,
   m3uVisibleCount: 1000,
   m3uPageSize: 1000
 };
@@ -104,6 +108,8 @@ const refs = {
   playerVideoHost: document.getElementById("playerVideoHost"),
   playerVideo: document.getElementById("playerVideo"),
   playerStatus: document.getElementById("playerStatus"),
+  playerChannelUpBtn: document.getElementById("playerChannelUpBtn"),
+  playerChannelDownBtn: document.getElementById("playerChannelDownBtn"),
   playerCastBtn: document.getElementById("playerCastBtn"),
   playerSystemBtn: document.getElementById("playerSystemBtn"),
   playerOpenExternal: document.getElementById("playerOpenExternal"),
@@ -116,11 +122,14 @@ const refs = {
   nowPlayingCastBtn: document.getElementById("nowPlayingCastBtn"),
   miniPlayer: document.getElementById("miniPlayer"),
   miniPlayerVideoHost: document.getElementById("miniPlayerVideoHost"),
+  miniPlayerChannelUpBtn: document.getElementById("miniPlayerChannelUpBtn"),
+  miniPlayerChannelDownBtn: document.getElementById("miniPlayerChannelDownBtn"),
   miniPlayerRestoreBtn: document.getElementById("miniPlayerRestoreBtn"),
   miniPlayerStopBtn: document.getElementById("miniPlayerStopBtn"),
   m3uDialog: document.getElementById("m3uDialog"),
   m3uSummary: document.getElementById("m3uSummary"),
   m3uSearchWrap: document.getElementById("m3uSearchWrap"),
+  m3uScanFilter: document.getElementById("m3uScanFilter"),
   m3uSearchInput: document.getElementById("m3uSearchInput"),
   m3uList: document.getElementById("m3uList"),
   m3uEmpty: document.getElementById("m3uEmpty"),
@@ -162,6 +171,13 @@ function bindEvents() {
   });
   refs.m3uSearchInput.addEventListener("input", (event) => {
     state.m3uSearchQuery = event.target.value.trim().toLowerCase();
+    saveImportedM3uState();
+    state.m3uVisibleCount = state.m3uPageSize;
+    renderM3uChannels();
+  });
+  refs.m3uScanFilter.addEventListener("change", (event) => {
+    state.m3uScanFilter = event.target.value;
+    saveImportedM3uState();
     state.m3uVisibleCount = state.m3uPageSize;
     renderM3uChannels();
   });
@@ -187,10 +203,14 @@ function bindEvents() {
   refs.deleteChannelBtn.addEventListener("click", deleteCurrentChannel);
   refs.playerCastBtn.addEventListener("click", onPlayerCastClick);
   refs.playerSystemBtn.addEventListener("click", onSystemPlayerClick);
+  refs.playerChannelUpBtn.addEventListener("click", () => switchPlayerChannel(-1));
+  refs.playerChannelDownBtn.addEventListener("click", () => switchPlayerChannel(1));
   refs.playerCloseBtn.addEventListener("click", minimizePlayer);
   refs.playerStopBtn.addEventListener("click", stopPlayer);
   refs.nowPlayingOpenBtn.addEventListener("click", openActiveChannelInPlayer);
   refs.nowPlayingCastBtn.addEventListener("click", onPlayerCastClick);
+  refs.miniPlayerChannelUpBtn.addEventListener("click", () => switchPlayerChannel(-1));
+  refs.miniPlayerChannelDownBtn.addEventListener("click", () => switchPlayerChannel(1));
   refs.miniPlayerRestoreBtn.addEventListener("click", openActiveChannelInPlayer);
   refs.miniPlayerStopBtn.addEventListener("click", stopPlayer);
   refs.miniPlayer.addEventListener("pointerdown", startMiniPlayerDrag);
@@ -558,9 +578,12 @@ async function importM3uPlaylist(event) {
     state.importedM3uChannels = parsedChannels;
     state.importedM3uScanResults = new Map();
     state.m3uSearchQuery = "";
+    state.m3uScanFilter = "all";
     state.m3uVisibleCount = state.m3uPageSize;
     setImportedScanStatus("");
+    refs.m3uScanFilter.value = "all";
     refs.m3uSearchInput.value = "";
+    saveImportedM3uState();
     renderM3uChannels();
     refs.m3uDialog.showModal();
 
@@ -577,6 +600,10 @@ async function importM3uPlaylist(event) {
 }
 
 function openM3uDialogForNetworkUrl() {
+  refs.m3uSearchInput.value = state.m3uSearchQuery;
+  refs.m3uScanFilter.value = state.m3uScanFilter;
+  renderM3uChannels();
+
   if (!refs.m3uDialog.open) {
     refs.m3uDialog.showModal();
   }
@@ -718,12 +745,14 @@ function renderM3uChannels() {
   const channels = state.importedM3uChannels;
   refs.m3uSearchWrap.classList.toggle("hidden", channels.length === 0);
 
-  const filteredChannels = state.m3uSearchQuery
+  const searchFilteredChannels = state.m3uSearchQuery
     ? channels.filter((channel) => {
       const haystack = `${channel.name} ${channel.groupName} ${channel.streamUrl}`.toLowerCase();
       return haystack.includes(state.m3uSearchQuery);
     })
     : channels;
+
+  const filteredChannels = applyM3uScanFilter(searchFilteredChannels);
 
   refs.m3uList.textContent = "";
   const visibleChannels = filteredChannels.slice(0, state.m3uVisibleCount);
@@ -733,14 +762,14 @@ function renderM3uChannels() {
   refs.m3uLoadMoreBtn.classList.toggle("hidden", !hasMore);
 
   refs.m3uSummary.textContent = channels.length
-    ? state.m3uSearchQuery
+    ? hasActiveM3uFilters()
       ? `${visibleChannels.length} of ${filteredChannels.length} filtered (${channels.length} total)`
       : `${visibleChannels.length} of ${channels.length} channels shown`
     : "No channels found in file.";
 
   refs.m3uEmpty.classList.toggle("hidden", visibleChannels.length > 0);
-  if (channels.length > 0 && filteredChannels.length === 0 && state.m3uSearchQuery) {
-    refs.m3uEmpty.textContent = "No channels match your search.";
+  if (channels.length > 0 && filteredChannels.length === 0 && hasActiveM3uFilters()) {
+    refs.m3uEmpty.textContent = "No channels match your current filters.";
   } else {
     refs.m3uEmpty.textContent = "Import an M3U/M3U8 file to view channels.";
   }
@@ -823,9 +852,23 @@ function addAllImportedChannels() {
     return;
   }
 
+  const filteredChannels = applyM3uScanFilter(
+    state.m3uSearchQuery
+      ? state.importedM3uChannels.filter((channel) => {
+        const haystack = `${channel.name} ${channel.groupName} ${channel.streamUrl}`.toLowerCase();
+        return haystack.includes(state.m3uSearchQuery);
+      })
+      : state.importedM3uChannels
+  );
+
+  if (!filteredChannels.length) {
+    window.alert("No channels match the current filters.");
+    return;
+  }
+
   let addedCount = 0;
 
-  state.importedM3uChannels.forEach((channel) => {
+  filteredChannels.forEach((channel) => {
     const exists = state.library.channels.some(
       (item) => item.streamUrl === channel.streamUrl && item.name.toLowerCase() === channel.name.toLowerCase()
     );
@@ -839,7 +882,7 @@ function addAllImportedChannels() {
   });
 
   renderM3uChannels();
-  window.alert(`Added ${addedCount} channel${addedCount === 1 ? "" : "s"} from playlist.`);
+  window.alert(`Added ${addedCount} channel${addedCount === 1 ? "" : "s"} from filtered playlist.`);
 }
 
 async function onNetworkStreamSubmit(event) {
@@ -910,9 +953,12 @@ async function tryLoadPlaylistFromUrl(url, fallbackGroupName = "Imported", optio
       state.importedM3uChannels = parsedChannels;
       state.importedM3uScanResults = new Map();
       state.m3uSearchQuery = "";
+      state.m3uScanFilter = "all";
       state.m3uVisibleCount = state.m3uPageSize;
       setImportedScanStatus("");
+      refs.m3uScanFilter.value = "all";
       refs.m3uSearchInput.value = "";
+      saveImportedM3uState();
       renderM3uChannels();
       if (!refs.m3uDialog.open) {
         refs.m3uDialog.showModal();
@@ -926,9 +972,12 @@ async function tryLoadPlaylistFromUrl(url, fallbackGroupName = "Imported", optio
     state.importedM3uChannels = parsedChannels;
     state.importedM3uScanResults = new Map();
     state.m3uSearchQuery = "";
+    state.m3uScanFilter = "all";
     state.m3uVisibleCount = state.m3uPageSize;
     setImportedScanStatus("");
+    refs.m3uScanFilter.value = "all";
     refs.m3uSearchInput.value = "";
+    saveImportedM3uState();
     renderM3uChannels();
     if (!refs.m3uDialog.open) {
       refs.m3uDialog.showModal();
@@ -988,6 +1037,20 @@ function addImportedChannelToLibrary(channel, groupIdOverride = "") {
     streamUrl: channel.streamUrl,
     imageUrl: channel.imageUrl
   });
+
+  const importedScanResult = state.importedM3uScanResults.get(channel.streamUrl);
+  if (importedScanResult) {
+    channelScanResults.set(channel.streamUrl, importedScanResult);
+    saveChannelScanResults();
+
+    if (importedScanResult.reason === "forbidden") {
+      browserBlockedStreamUrls.add(channel.streamUrl);
+      saveBlockedStreamUrls();
+    } else if (importedScanResult.reason === "ok" && browserBlockedStreamUrls.has(channel.streamUrl)) {
+      browserBlockedStreamUrls.delete(channel.streamUrl);
+      saveBlockedStreamUrls();
+    }
+  }
 
   saveLibrary();
   render();
@@ -1201,6 +1264,18 @@ async function scanImportedM3uChannels() {
     await runWithConcurrency(importedStreamUrls, CHANNEL_SCAN_CONCURRENCY, async (streamUrl) => {
       const result = await probeStreamUrl(streamUrl);
       state.importedM3uScanResults.set(streamUrl, result);
+      channelScanResults.set(streamUrl, result);
+      saveChannelScanResults();
+
+      if (result.reason === "forbidden") {
+        browserBlockedStreamUrls.add(streamUrl);
+        saveBlockedStreamUrls();
+      } else if (result.reason === "ok" && browserBlockedStreamUrls.has(streamUrl)) {
+        browserBlockedStreamUrls.delete(streamUrl);
+        saveBlockedStreamUrls();
+      }
+
+      saveImportedM3uState();
 
       if (result.level === "success") {
         reachable += 1;
@@ -1290,6 +1365,30 @@ async function probeStreamUrl(streamUrl) {
       };
     }
 
+    if (response.status === 404) {
+      return {
+        level: "warning",
+        label: "Scan: HTTP 404",
+        reason: "not-found"
+      };
+    }
+
+    if (response.status === 451) {
+      return {
+        level: "error",
+        label: "Scan: Country/Geo blocked",
+        reason: "country"
+      };
+    }
+
+    if (response.status === 401) {
+      return {
+        level: "error",
+        label: "Scan: Unauthorized (401)",
+        reason: "unauthorized"
+      };
+    }
+
     if (response.status >= 400) {
       return {
         level: "warning",
@@ -1324,10 +1423,53 @@ async function probeStreamUrl(streamUrl) {
     return {
       level: "warning",
       label: "Scan: CORS/Network",
-      reason: "network"
+      reason: "cors"
     };
   } finally {
     window.clearTimeout(timeoutId);
+  }
+}
+
+function hasActiveM3uFilters() {
+  return Boolean(state.m3uSearchQuery) || state.m3uScanFilter !== "all";
+}
+
+function applyM3uScanFilter(channels) {
+  const filter = state.m3uScanFilter;
+  if (filter === "all") {
+    return channels;
+  }
+
+  return channels.filter((channel) => {
+    const result = state.importedM3uScanResults.get(channel.streamUrl);
+    return matchesScanFilter(result, filter);
+  });
+}
+
+function matchesScanFilter(result, filter) {
+  if (filter === "not-scanned") {
+    return !result;
+  }
+
+  if (!result) {
+    return false;
+  }
+
+  switch (filter) {
+    case "reachable":
+      return result.reason === "ok";
+    case "cors":
+      return result.reason === "cors";
+    case "404":
+      return result.reason === "not-found";
+    case "country":
+      return result.reason === "country";
+    case "blocked":
+      return ["forbidden", "unauthorized", "country"].includes(result.reason);
+    case "issues":
+      return result.reason !== "ok";
+    default:
+      return true;
   }
 }
 
@@ -1534,6 +1676,7 @@ function openPlayer(channel) {
 
   setPlayerStatus("");
   updateCastButtonVisibility();
+  updatePlayerChannelButtons();
   moveVideoToDialogHost();
   refs.miniPlayer.classList.add("hidden");
 
@@ -1557,6 +1700,7 @@ function stopPlayer() {
   resetMiniPlayerPosition();
   playerState.activeChannel = null;
   updateNowPlayingBar();
+  updatePlayerChannelButtons();
   setPlayerStatus("");
 
   if (refs.playerDialog.open) {
@@ -1587,6 +1731,110 @@ function openActiveChannelInPlayer() {
   }
 
   openPlayer(playerState.activeChannel);
+}
+
+function switchPlayerChannel(step) {
+  if (!playerState.activeChannel) {
+    return;
+  }
+
+  const navigableChannels = getNavigablePlaybackChannels();
+  if (navigableChannels.length < 2) {
+    setPlayerStatus("No other channels in the current list.");
+    updatePlayerChannelButtons();
+    return;
+  }
+
+  const currentIndex = findPlaybackChannelIndex(navigableChannels, playerState.activeChannel);
+  const safeCurrentIndex = currentIndex >= 0 ? currentIndex : 0;
+  const nextIndex = (safeCurrentIndex + step + navigableChannels.length) % navigableChannels.length;
+  const nextChannel = navigableChannels[nextIndex];
+
+  openPlayer(nextChannel);
+}
+
+function updatePlayerChannelButtons() {
+  const hasChoices = getNavigablePlaybackChannels().length > 1;
+
+  refs.playerChannelUpBtn.disabled = !hasChoices;
+  refs.playerChannelDownBtn.disabled = !hasChoices;
+  refs.miniPlayerChannelUpBtn.disabled = !hasChoices;
+  refs.miniPlayerChannelDownBtn.disabled = !hasChoices;
+}
+
+function getNavigablePlaybackChannels() {
+  const activeChannel = playerState.activeChannel;
+  if (!activeChannel) {
+    return [];
+  }
+
+  const filteredImportedChannels = getFilteredImportedM3uChannels();
+  const importedContainsActive = filteredImportedChannels.some((channel) => isSamePlaybackChannel(channel, activeChannel));
+  if (filteredImportedChannels.length && importedContainsActive) {
+    return filteredImportedChannels.map(mapImportedChannelToPlaybackChannel);
+  }
+
+  if (state.selectedGroupId === "all") {
+    return [...state.library.channels];
+  }
+
+  return state.library.channels.filter((channel) => channel.groupId === state.selectedGroupId);
+}
+
+function getFilteredImportedM3uChannels() {
+  const searchFilteredChannels = state.m3uSearchQuery
+    ? state.importedM3uChannels.filter((channel) => {
+      const haystack = `${channel.name} ${channel.groupName} ${channel.streamUrl}`.toLowerCase();
+      return haystack.includes(state.m3uSearchQuery);
+    })
+    : state.importedM3uChannels;
+
+  return applyM3uScanFilter(searchFilteredChannels);
+}
+
+function mapImportedChannelToPlaybackChannel(channel) {
+  return {
+    id: channel.id,
+    name: channel.name,
+    groupId: resolvePlaybackGroupId(channel),
+    streamUrl: channel.streamUrl,
+    imageUrl: channel.imageUrl
+  };
+}
+
+function resolvePlaybackGroupId(channel) {
+  if (channel.groupId && state.library.groups.some((group) => group.id === channel.groupId)) {
+    return channel.groupId;
+  }
+
+  const groupName = channel.groupName?.trim();
+  if (groupName) {
+    const existingGroup = state.library.groups.find((group) => group.name.toLowerCase() === groupName.toLowerCase());
+    if (existingGroup) {
+      return existingGroup.id;
+    }
+  }
+
+  return playerState.activeChannel?.groupId || "";
+}
+
+function findPlaybackChannelIndex(channels, targetChannel) {
+  return channels.findIndex((channel) => isSamePlaybackChannel(channel, targetChannel));
+}
+
+function isSamePlaybackChannel(left, right) {
+  if (!left || !right) {
+    return false;
+  }
+
+  if (left.id && right.id && left.id === right.id) {
+    return true;
+  }
+
+  return (
+    left.streamUrl === right.streamUrl &&
+    String(left.name || "").toLowerCase() === String(right.name || "").toLowerCase()
+  );
 }
 
 async function startVideoPlayback(streamUrl) {
@@ -2275,6 +2523,89 @@ function loadChannelScanResults() {
 function saveChannelScanResults() {
   const data = Object.fromEntries(channelScanResults.entries());
   localStorage.setItem(CHANNEL_SCAN_RESULTS_KEY, JSON.stringify(data));
+}
+
+function loadImportedM3uState() {
+  const fallback = {
+    channels: [],
+    scanResults: new Map(),
+    searchQuery: "",
+    scanFilter: "all"
+  };
+
+  try {
+    const raw = localStorage.getItem(IMPORTED_M3U_STATE_KEY);
+    if (!raw) {
+      return fallback;
+    }
+
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") {
+      return fallback;
+    }
+
+    const channels = Array.isArray(parsed.channels)
+      ? parsed.channels
+        .filter((channel) =>
+          channel &&
+          typeof channel.id === "string" &&
+          typeof channel.name === "string" &&
+          typeof channel.streamUrl === "string"
+        )
+        .map((channel) => ({
+          id: channel.id,
+          name: channel.name,
+          streamUrl: channel.streamUrl,
+          imageUrl: typeof channel.imageUrl === "string" ? channel.imageUrl : "",
+          groupName: typeof channel.groupName === "string" && channel.groupName.trim() ? channel.groupName : "Imported"
+        }))
+      : [];
+
+    const scanResults = new Map();
+    if (parsed.scanResults && typeof parsed.scanResults === "object") {
+      Object.entries(parsed.scanResults).forEach(([url, result]) => {
+        if (
+          typeof url === "string" &&
+          url.trim() &&
+          result &&
+          typeof result === "object" &&
+          ["success", "warning", "error"].includes(result.level) &&
+          typeof result.label === "string"
+        ) {
+          scanResults.set(url, {
+            level: result.level,
+            label: result.label,
+            reason: typeof result.reason === "string" ? result.reason : ""
+          });
+        }
+      });
+    }
+
+    const allowedFilters = new Set(["all", "not-scanned", "reachable", "cors", "404", "country", "blocked", "issues"]);
+    const scanFilter = typeof parsed.scanFilter === "string" && allowedFilters.has(parsed.scanFilter)
+      ? parsed.scanFilter
+      : "all";
+
+    return {
+      channels,
+      scanResults,
+      searchQuery: typeof parsed.searchQuery === "string" ? parsed.searchQuery.toLowerCase() : "",
+      scanFilter
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function saveImportedM3uState() {
+  const payload = {
+    channels: state.importedM3uChannels,
+    scanResults: Object.fromEntries(state.importedM3uScanResults.entries()),
+    searchQuery: state.m3uSearchQuery,
+    scanFilter: state.m3uScanFilter
+  };
+
+  localStorage.setItem(IMPORTED_M3U_STATE_KEY, JSON.stringify(payload));
 }
 
 function pruneBlockedStreamUrls() {

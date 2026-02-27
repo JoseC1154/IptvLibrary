@@ -419,9 +419,14 @@ p {
 
 .m3u-search-wrap {
   display: grid;
+  gap: 8px;
 }
 
 .m3u-search-wrap input {
+  width: 100%;
+}
+
+.m3u-search-wrap select {
   width: 100%;
 }
 

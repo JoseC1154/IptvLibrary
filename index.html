@@ -141,6 +141,8 @@
         <p id="playerStatus" class="field-feedback hidden" role="status" aria-live="polite"></p>
 
         <div class="dialog-actions">
+          <button id="playerChannelUpBtn" type="button" class="btn">Channel ▲</button>
+          <button id="playerChannelDownBtn" type="button" class="btn">Channel ▼</button>
           <button id="playerCastBtn" type="button" class="btn hidden">Cast</button>
           <button id="playerSystemBtn" type="button" class="btn">System Player</button>
           <a id="playerOpenExternal" class="btn" target="_blank" rel="noopener noreferrer">Open External</a>
@@ -181,6 +183,16 @@
         </form>
 
         <div id="m3uSearchWrap" class="m3u-search-wrap hidden">
+          <select id="m3uScanFilter" aria-label="Filter by scan result">
+            <option value="all">All scan results</option>
+            <option value="not-scanned">Not scanned</option>
+            <option value="reachable">Reachable</option>
+            <option value="cors">CORS/Network blocked</option>
+            <option value="404">HTTP 404</option>
+            <option value="country">Country/Geo blocked</option>
+            <option value="blocked">Any blocked (403/401/country)</option>
+            <option value="issues">Any issues</option>
+          </select>
           <input id="m3uSearchInput" type="search" placeholder="Search channels, groups, or URL..." />
         </div>
 
@@ -200,6 +212,8 @@
     <section id="miniPlayer" class="mini-player glass hidden" aria-live="polite">
       <div id="miniPlayerVideoHost" class="mini-player-video-host"></div>
       <div class="mini-player-actions">
+        <button id="miniPlayerChannelUpBtn" type="button" class="btn tiny" aria-label="Previous channel">▲</button>
+        <button id="miniPlayerChannelDownBtn" type="button" class="btn tiny" aria-label="Next channel">▼</button>
         <button id="miniPlayerRestoreBtn" type="button" class="btn tiny">Restore</button>
         <button id="miniPlayerStopBtn" type="button" class="btn tiny danger">Stop</button>
       </div>

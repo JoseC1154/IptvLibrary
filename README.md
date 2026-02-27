@@ -12,8 +12,9 @@ A GitHub-friendly Progressive Web App to organize IPTV links into channel groups
 - Import M3U/M3U8 playlist files and view parsed channels
 - Submit a direct network stream URL from the import dialog
 - Batch scan all saved channels to flag reachable/blocked/problem streams
+- Filter imported playlist channels by scan result (reachable, CORS/network, 404, country/geo, blocked, issues)
 - Add individual channels from imported playlist
-- Add all channels from imported playlist in one click
+- Add all channels from imported playlist in one click (respects current search/filter view)
 - Mini-play channels directly from imported playlist without adding first
 - Choose target group per imported channel before adding
 - Store channel details:
