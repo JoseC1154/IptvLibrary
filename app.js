@@ -1,5 +1,10 @@
 const STORAGE_KEY = "iptv-library-v1";
 const APP_VERSION = 1;
+const HLS_CDN_URL = "https://cdn.jsdelivr.net/npm/hls.js@1.5.18/dist/hls.min.js";
+const BLOCKED_STREAMS_KEY = "iptv-browser-blocked-streams-v1";
+const CHANNEL_SCAN_RESULTS_KEY = "iptv-channel-scan-results-v1";
+const CHANNEL_SCAN_TIMEOUT_MS = 8000;
+const CHANNEL_SCAN_CONCURRENCY = 4;
 
 const seedData = {
   version: APP_VERSION,
@@ -29,15 +34,17 @@ const state = {
   library: loadLibrary(),
   selectedGroupId: "all",
   importedM3uChannels: [],
+  importedM3uScanResults: new Map(),
   lastPreviewedM3uId: "",
   m3uSearchQuery: "",
-  m3uVisibleCount: 300,
-  m3uPageSize: 300
+  m3uVisibleCount: 1000,
+  m3uPageSize: 1000
 };
 
 const playerState = {
   activeChannel: null,
   hlsInstance: null,
+  mpegtsInstance: null,
   chromecastReady: false,
   stallRecoveryTimer: null,
   miniPlayerDrag: {
@@ -54,6 +61,9 @@ const playerState = {
 };
 
 const failedImageUrls = new Set();
+const browserBlockedStreamUrls = loadBlockedStreamUrls();
+const channelScanResults = loadChannelScanResults();
+let hlsLibraryLoadPromise = null;
 
 const refs = {
   appShell: document.querySelector(".app-shell"),
@@ -65,6 +75,8 @@ const refs = {
   addGroupBtn: document.getElementById("addGroupBtn"),
   addChannelBtn: document.getElementById("addChannelBtn"),
   addPlaylistBtn: document.getElementById("addPlaylistBtn"),
+  scanChannelsBtn: document.getElementById("scanChannelsBtn"),
+  scanStatus: document.getElementById("scanStatus"),
   exportBtn: document.getElementById("exportBtn"),
   importInput: document.getElementById("importInput"),
   m3uImportInput: document.getElementById("m3uImportInput"),
@@ -116,6 +128,8 @@ const refs = {
   m3uAddAllBtn: document.getElementById("m3uAddAllBtn"),
   m3uLoadMoreBtn: document.getElementById("m3uLoadMoreBtn"),
   networkStreamForm: document.getElementById("networkStreamForm"),
+  networkScanChannelsBtn: document.getElementById("networkScanChannelsBtn"),
+  networkScanStatus: document.getElementById("networkScanStatus"),
   networkStreamUrl: document.getElementById("networkStreamUrl"),
   networkStreamTitle: document.getElementById("networkStreamTitle"),
   networkStreamGroup: document.getElementById("networkStreamGroup"),
@@ -136,6 +150,8 @@ function bindEvents() {
   refs.addGroupBtn.addEventListener("click", () => openGroupDialog());
   refs.addChannelBtn.addEventListener("click", () => openChannelDialog());
   refs.addPlaylistBtn.addEventListener("click", openM3uDialogForNetworkUrl);
+  refs.scanChannelsBtn?.addEventListener("click", scanChannels);
+  refs.networkScanChannelsBtn?.addEventListener("click", scanImportedM3uChannels);
   refs.exportBtn.addEventListener("click", exportLibrary);
   refs.importInput.addEventListener("change", importLibrary);
   refs.m3uImportInput.addEventListener("change", importM3uPlaylist);
@@ -270,6 +286,7 @@ function renderChannels() {
     const image = card.querySelector(".card-image");
     const title = card.querySelector(".card-title");
     const groupText = card.querySelector(".card-group");
+    const statusBadge = card.querySelector(".card-status");
 
     editBtn.addEventListener("click", () => openChannelDialog(channel.id));
     link.href = channel.streamUrl;
@@ -291,6 +308,24 @@ function renderChannels() {
 
     title.textContent = channel.name;
     groupText.textContent = groupName;
+
+    const scanResult = channelScanResults.get(channel.streamUrl);
+    const blockedByBrowser = browserBlockedStreamUrls.has(channel.streamUrl);
+
+    statusBadge.classList.remove("success", "warning", "error");
+
+    if (scanResult) {
+      statusBadge.textContent = scanResult.label;
+      statusBadge.classList.add(scanResult.level);
+      statusBadge.classList.remove("hidden");
+    } else if (blockedByBrowser) {
+      statusBadge.textContent = "Browser-blocked (403)";
+      statusBadge.classList.add("error");
+      statusBadge.classList.remove("hidden");
+    } else {
+      statusBadge.textContent = "";
+      statusBadge.classList.add("hidden");
+    }
 
     refs.channelGrid.appendChild(card);
   });
@@ -483,6 +518,7 @@ function deleteCurrentChannel() {
   const isActiveChannel = playerState.activeChannel?.id === channel.id;
 
   state.library.channels = state.library.channels.filter((item) => item.id !== channelId);
+  pruneBlockedStreamUrls();
 
   if (isActiveChannel) {
     playerState.activeChannel = null;
@@ -520,8 +556,10 @@ async function importM3uPlaylist(event) {
     const parsedChannels = parseM3uText(text);
 
     state.importedM3uChannels = parsedChannels;
+    state.importedM3uScanResults = new Map();
     state.m3uSearchQuery = "";
     state.m3uVisibleCount = state.m3uPageSize;
+    setImportedScanStatus("");
     refs.m3uSearchInput.value = "";
     renderM3uChannels();
     refs.m3uDialog.showModal();
@@ -720,6 +758,8 @@ function renderM3uChannels() {
     const playBtn = row.querySelector(".m3u-play-btn");
     const addBtn = row.querySelector(".m3u-add-btn");
     const groupSelect = row.querySelector(".m3u-group-select");
+    const itemStatus = row.querySelector(".m3u-item-status");
+    const scanResult = state.importedM3uScanResults.get(channel.streamUrl);
     const alreadyAdded = state.library.channels.some(
       (item) => item.streamUrl === channel.streamUrl && item.name.toLowerCase() === channel.name.toLowerCase()
     );
@@ -727,6 +767,16 @@ function renderM3uChannels() {
     title.textContent = channel.name;
     subtitle.textContent = `${channel.groupName} • ${channel.streamUrl}`;
     populateM3uGroupSelect(groupSelect, channel.groupName);
+
+    if (scanResult) {
+      itemStatus.textContent = scanResult.label;
+      itemStatus.classList.remove("hidden", "success", "warning", "error");
+      itemStatus.classList.add(scanResult.level);
+    } else {
+      itemStatus.textContent = "";
+      itemStatus.classList.remove("success", "warning", "error");
+      itemStatus.classList.add("hidden");
+    }
 
     if (channel.imageUrl) {
       applyImageWithFallback(image, channel.imageUrl, `${channel.name} logo`);
@@ -800,39 +850,84 @@ async function onNetworkStreamSubmit(event) {
     return;
   }
 
-  const loadedPlaylist = await tryLoadPlaylistFromUrl(networkChannel.streamUrl, networkChannel.groupName);
+  const loadedPlaylist = await tryLoadPlaylistFromUrl(networkChannel.streamUrl, networkChannel.groupName, {
+    autoAddSingle: true,
+    fallbackName: networkChannel.name,
+    fallbackImageUrl: networkChannel.imageUrl
+  });
   if (loadedPlaylist) {
     return;
   }
 
-  window.alert("Could not open a playlist from this URL. Please use a direct M3U/M3U8 playlist URL.");
+  window.alert("Could not parse playlist data from this URL.");
 }
 
-async function tryLoadPlaylistFromUrl(url, fallbackGroupName = "Imported") {
-  const shouldTryPlaylist = isLikelyPlaylistUrl(url);
-  if (!shouldTryPlaylist) {
-    return false;
-  }
-
+async function tryLoadPlaylistFromUrl(url, fallbackGroupName = "Imported", options = {}) {
+  const { autoAddSingle = false, fallbackName = "", fallbackImageUrl = "" } = options;
   try {
     const response = await fetch(url, { cache: "no-store" });
     if (!response.ok) {
+      if (response.status === 403) {
+        throw new Error("Playlist request forbidden (403)");
+      }
       throw new Error("Playlist request failed");
     }
 
     const text = await response.text();
-    const parsedChannels = parseM3uText(text).map((channel) => ({
+    let parsedChannels = parseM3uText(text).map((channel) => ({
       ...channel,
       groupName: channel.groupName || fallbackGroupName || "Imported"
     }));
+
+    if (!parsedChannels.length && isHlsManifestText(text)) {
+      parsedChannels = [
+        {
+          id: createId("m3u"),
+          name: fallbackName || extractNameFromUrl(url) || "Network Stream",
+          streamUrl: url,
+          imageUrl: normalizeImageUrl(fallbackImageUrl || ""),
+          groupName: fallbackGroupName || "Imported"
+        }
+      ];
+    }
 
     if (!parsedChannels.length) {
       return false;
     }
 
+    if (autoAddSingle && parsedChannels.length === 1) {
+      const [singleChannel] = parsedChannels;
+      const exists = state.library.channels.some(
+        (item) =>
+          item.streamUrl === singleChannel.streamUrl &&
+          item.name.toLowerCase() === singleChannel.name.toLowerCase()
+      );
+
+      if (!exists) {
+        addImportedChannelToLibrary(singleChannel);
+      }
+
+      state.importedM3uChannels = parsedChannels;
+      state.importedM3uScanResults = new Map();
+      state.m3uSearchQuery = "";
+      state.m3uVisibleCount = state.m3uPageSize;
+      setImportedScanStatus("");
+      refs.m3uSearchInput.value = "";
+      renderM3uChannels();
+      if (!refs.m3uDialog.open) {
+        refs.m3uDialog.showModal();
+      }
+
+      refs.m3uSummary.textContent = "1 channel loaded and linked";
+      window.alert("Single-channel M3U parsed. Channel link added to your library.");
+      return true;
+    }
+
     state.importedM3uChannels = parsedChannels;
+    state.importedM3uScanResults = new Map();
     state.m3uSearchQuery = "";
     state.m3uVisibleCount = state.m3uPageSize;
+    setImportedScanStatus("");
     refs.m3uSearchInput.value = "";
     renderM3uChannels();
     if (!refs.m3uDialog.open) {
@@ -840,16 +935,27 @@ async function tryLoadPlaylistFromUrl(url, fallbackGroupName = "Imported") {
     }
     refs.m3uSummary.textContent = `${parsedChannels.length} channels loaded from URL`;
     return true;
-  } catch {
-    window.alert(
-      "Could not load playlist URL. If this is an M3U link, the host may block CORS. You can still use it as a direct stream URL."
-    );
+  } catch (error) {
+    const message = String(error?.message || "").toLowerCase();
+    if (message.includes("403")) {
+      window.alert(
+        "This provider blocks browser-based requests (HTTP 403). The same URL may work in VLC but not in-browser. Use System Player/Open External for this stream."
+      );
+      return false;
+    }
+
+    window.alert("Could not load playlist URL. The host may block CORS or require authentication.");
     return false;
   }
 }
 
-function isLikelyPlaylistUrl(url) {
-  return /\.m3u(8)?(\?|$)/i.test(url) || /[?&](type|format)=m3u/i.test(url);
+function isHlsManifestText(text) {
+  const normalized = text.trim();
+  if (!normalized.startsWith("#EXTM3U")) {
+    return false;
+  }
+
+  return /#EXT-X-(STREAM-INF|TARGETDURATION|MEDIA-SEQUENCE|ENDLIST)/i.test(normalized);
 }
 
 function buildNetworkChannelFromForm() {
@@ -964,6 +1070,7 @@ async function importLibrary(event) {
 
     state.library = normalizeLibrary(imported);
     state.selectedGroupId = "all";
+    pruneBlockedStreamUrls();
     saveLibrary();
     render();
   } catch (error) {
@@ -992,7 +1099,236 @@ function loadLibrary() {
 }
 
 function saveLibrary() {
+  pruneBlockedStreamUrls();
+  pruneChannelScanResults();
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state.library));
+}
+
+async function scanChannels() {
+  const allStreamUrls = [...new Set(state.library.channels.map((channel) => channel.streamUrl).filter(Boolean))];
+  if (!allStreamUrls.length) {
+    setScanStatus("No channels to scan.");
+    return;
+  }
+
+  if (refs.scanChannelsBtn?.disabled) {
+    return;
+  }
+
+  if (refs.scanChannelsBtn) {
+    refs.scanChannelsBtn.disabled = true;
+  }
+  if (refs.networkScanChannelsBtn) {
+    refs.networkScanChannelsBtn.disabled = true;
+  }
+
+  let processed = 0;
+  let reachable = 0;
+  let blocked = 0;
+  let issues = 0;
+  let blockedSetChanged = false;
+
+  setScanStatus(`Scanning ${processed}/${allStreamUrls.length}...`);
+
+  try {
+    await runWithConcurrency(allStreamUrls, CHANNEL_SCAN_CONCURRENCY, async (streamUrl) => {
+      const result = await probeStreamUrl(streamUrl);
+      channelScanResults.set(streamUrl, result);
+
+      if (result.level === "success") {
+        reachable += 1;
+        if (browserBlockedStreamUrls.delete(streamUrl)) {
+          blockedSetChanged = true;
+        }
+      } else if (result.reason === "forbidden") {
+        blocked += 1;
+        if (!browserBlockedStreamUrls.has(streamUrl)) {
+          browserBlockedStreamUrls.add(streamUrl);
+          blockedSetChanged = true;
+        }
+      } else {
+        issues += 1;
+      }
+
+      processed += 1;
+      setScanStatus(`Scanning ${processed}/${allStreamUrls.length}...`);
+
+      if (processed % 8 === 0 || processed === allStreamUrls.length) {
+        renderChannels();
+      }
+    });
+
+    saveChannelScanResults();
+    if (blockedSetChanged) {
+      saveBlockedStreamUrls();
+    }
+
+    setScanStatus(`Scan complete: ${reachable} reachable, ${blocked} blocked, ${issues} with issues.`);
+    renderChannels();
+  } catch {
+    setScanStatus("Scan interrupted. Try again.");
+  } finally {
+    if (refs.scanChannelsBtn) {
+      refs.scanChannelsBtn.disabled = false;
+    }
+    if (refs.networkScanChannelsBtn) {
+      refs.networkScanChannelsBtn.disabled = false;
+    }
+  }
+}
+
+async function scanImportedM3uChannels() {
+  const importedStreamUrls = [...new Set(state.importedM3uChannels.map((channel) => channel.streamUrl).filter(Boolean))];
+  if (!importedStreamUrls.length) {
+    setImportedScanStatus("No loaded playlist channels to scan.");
+    return;
+  }
+
+  if (refs.networkScanChannelsBtn?.disabled) {
+    return;
+  }
+
+  refs.networkScanChannelsBtn.disabled = true;
+
+  let processed = 0;
+  let reachable = 0;
+  let blocked = 0;
+  let issues = 0;
+
+  setImportedScanStatus(`Scanning ${processed}/${importedStreamUrls.length}...`);
+
+  try {
+    await runWithConcurrency(importedStreamUrls, CHANNEL_SCAN_CONCURRENCY, async (streamUrl) => {
+      const result = await probeStreamUrl(streamUrl);
+      state.importedM3uScanResults.set(streamUrl, result);
+
+      if (result.level === "success") {
+        reachable += 1;
+      } else if (result.reason === "forbidden") {
+        blocked += 1;
+      } else {
+        issues += 1;
+      }
+
+      processed += 1;
+      setImportedScanStatus(`Scanning ${processed}/${importedStreamUrls.length}...`);
+
+      if (processed % 8 === 0 || processed === importedStreamUrls.length) {
+        renderM3uChannels();
+      }
+    });
+
+    setImportedScanStatus(`Scan complete: ${reachable} reachable, ${blocked} blocked, ${issues} with issues.`);
+    renderM3uChannels();
+  } catch {
+    setImportedScanStatus("Scan interrupted. Try again.");
+  } finally {
+    refs.networkScanChannelsBtn.disabled = false;
+  }
+}
+
+function setScanStatus(message) {
+  const text = (message || "").trim();
+  if (!refs.scanStatus) {
+    return;
+  }
+
+  refs.scanStatus.textContent = text;
+  refs.scanStatus.classList.toggle("hidden", !text);
+}
+
+function setImportedScanStatus(message) {
+  const text = (message || "").trim();
+  if (!refs.networkScanStatus) {
+    return;
+  }
+
+  refs.networkScanStatus.textContent = text;
+  refs.networkScanStatus.classList.toggle("hidden", !text);
+}
+
+async function runWithConcurrency(items, concurrency, worker) {
+  const limit = Math.max(1, Math.min(concurrency, items.length));
+  let index = 0;
+
+  const runners = Array.from({ length: limit }, async () => {
+    while (index < items.length) {
+      const currentIndex = index;
+      index += 1;
+      await worker(items[currentIndex], currentIndex);
+    }
+  });
+
+  await Promise.all(runners);
+}
+
+async function probeStreamUrl(streamUrl) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), CHANNEL_SCAN_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(streamUrl, {
+      method: "GET",
+      cache: "no-store",
+      mode: "cors",
+      signal: controller.signal
+    });
+
+    if (response.ok) {
+      return {
+        level: "success",
+        label: "Scan: Reachable",
+        reason: "ok"
+      };
+    }
+
+    if (response.status === 403) {
+      return {
+        level: "error",
+        label: "Scan: Blocked (403)",
+        reason: "forbidden"
+      };
+    }
+
+    if (response.status >= 400) {
+      return {
+        level: "warning",
+        label: `Scan: HTTP ${response.status}`,
+        reason: "http"
+      };
+    }
+
+    return {
+      level: "warning",
+      label: "Scan: Needs manual check",
+      reason: "uncertain"
+    };
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      return {
+        level: "warning",
+        label: "Scan: Timeout",
+        reason: "timeout"
+      };
+    }
+
+    const message = String(error?.message || "").toLowerCase();
+    if (message.includes("403") || message.includes("forbidden")) {
+      return {
+        level: "error",
+        label: "Scan: Blocked (403)",
+        reason: "forbidden"
+      };
+    }
+
+    return {
+      level: "warning",
+      label: "Scan: CORS/Network",
+      reason: "network"
+    };
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }
 
 function isValidLibrary(value) {
@@ -1211,6 +1547,7 @@ function openPlayer(channel) {
 function stopPlayer() {
   clearStallRecoveryTimer();
   destroyHlsInstance();
+  destroyMpegtsInstance();
   refs.playerVideo.pause();
   refs.playerVideo.removeAttribute("src");
   refs.playerVideo.load();
@@ -1252,12 +1589,17 @@ function openActiveChannelInPlayer() {
   openPlayer(playerState.activeChannel);
 }
 
-function startVideoPlayback(streamUrl) {
+async function startVideoPlayback(streamUrl) {
   clearStallRecoveryTimer();
   destroyHlsInstance();
+  destroyMpegtsInstance();
   refs.playerVideo.pause();
   refs.playerVideo.removeAttribute("src");
   refs.playerVideo.load();
+
+  if (isLikelyHlsStream(streamUrl)) {
+    await ensureHlsLibraryLoaded();
+  }
 
   if (isLikelyHlsStream(streamUrl) && window.Hls?.isSupported?.()) {
     const hlsInstance = new window.Hls({
@@ -1291,8 +1633,21 @@ function startVideoPlayback(streamUrl) {
     hlsInstance.on(window.Hls.Events.ERROR, (_event, data) => {
       const details = `${data?.details ?? ""}`.toLowerCase();
       const corsLike = details.includes("xhr") || details.includes("network") || details.includes("manifest");
+      const httpCode = extractHttpStatusFromHlsError(data);
+      const forbiddenLike = httpCode === 403 || /\b403\b/.test(details);
 
       if (data?.fatal) {
+        if (forbiddenLike) {
+          browserBlockedStreamUrls.add(streamUrl);
+          saveBlockedStreamUrls();
+          renderChannels();
+          setPlayerStatus(
+            "Stream host rejected browser playback (403). Try System Player/Open External; VLC may still work.",
+            "error"
+          );
+          return;
+        }
+
         if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR) {
           setPlayerStatus("Network interruption detected. Attempting stream recovery...");
           hlsInstance.startLoad();
@@ -1314,6 +1669,7 @@ function startVideoPlayback(streamUrl) {
         }
 
         setPlayerStatus("Unable to play this stream in browser.", "error");
+        fallbackToNativePlayback(streamUrl);
         return;
       }
 
@@ -1327,6 +1683,33 @@ function startVideoPlayback(streamUrl) {
     return;
   }
 
+  if (isLikelyMpegTsStream(streamUrl) && window.mpegts?.getFeatureList?.().mseLivePlayback) {
+    try {
+      const player = window.mpegts.createPlayer({
+        type: "mpegts",
+        url: streamUrl,
+        isLive: true
+      });
+
+      player.attachMediaElement(refs.playerVideo);
+      player.load();
+      player.play().catch(() => {
+        setPlayerStatus("Press play to start the stream.");
+      });
+
+      if (window.mpegts.Events?.ERROR) {
+        player.on(window.mpegts.Events.ERROR, () => {
+          setPlayerStatus("MPEG-TS playback failed in-browser. Try Open External or System Player.", "error");
+        });
+      }
+
+      playerState.mpegtsInstance = player;
+      return;
+    } catch {
+      setPlayerStatus("MPEG-TS stream initialization failed.", "error");
+    }
+  }
+
   refs.playerVideo.src = streamUrl;
   refs.playerVideo.preload = "auto";
   refs.playerVideo.play().catch(() => {
@@ -1334,10 +1717,70 @@ function startVideoPlayback(streamUrl) {
   });
 }
 
+function fallbackToNativePlayback(streamUrl) {
+  refs.playerVideo.src = streamUrl;
+  refs.playerVideo.preload = "auto";
+  refs.playerVideo.play().catch(() => {
+    // no-op; status message already set by caller
+  });
+}
+
+async function ensureHlsLibraryLoaded() {
+  if (window.Hls) {
+    return;
+  }
+
+  if (!hlsLibraryLoadPromise) {
+    hlsLibraryLoadPromise = loadExternalScript(HLS_CDN_URL);
+  }
+
+  try {
+    await hlsLibraryLoadPromise;
+  } catch {
+    setPlayerStatus("HLS library failed to load. Trying native playback.", "error");
+  }
+}
+
+function loadExternalScript(src) {
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[src="${src}"]`);
+    if (existing) {
+      if (window.Hls) {
+        resolve();
+      } else {
+        existing.addEventListener("load", () => resolve(), { once: true });
+        existing.addEventListener("error", () => reject(new Error("Script load failed")), { once: true });
+      }
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.src = src;
+    script.async = true;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error("Script load failed"));
+    document.head.appendChild(script);
+  });
+}
+
 function destroyHlsInstance() {
   if (playerState.hlsInstance) {
     playerState.hlsInstance.destroy();
     playerState.hlsInstance = null;
+  }
+}
+
+function destroyMpegtsInstance() {
+  if (playerState.mpegtsInstance) {
+    try {
+      playerState.mpegtsInstance.pause();
+      playerState.mpegtsInstance.unload();
+      playerState.mpegtsInstance.detachMediaElement();
+      playerState.mpegtsInstance.destroy();
+    } catch {
+      // no-op
+    }
+    playerState.mpegtsInstance = null;
   }
 }
 
@@ -1367,6 +1810,10 @@ function clearStallRecoveryTimer() {
 
 function isLikelyHlsStream(url) {
   return /\.m3u8($|\?)/i.test(url);
+}
+
+function isLikelyMpegTsStream(url) {
+  return /\.(ts|m2ts)($|\?)/i.test(url) || /[?&](output|format)=ts/i.test(url);
 }
 
 function setPlayerStatus(message, type = "") {
@@ -1439,7 +1886,7 @@ async function onPlayerCastClick() {
     return;
   }
 
-  await handoffToSystemPlayer(playerState.activeChannel.streamUrl);
+  await handoffToSystemPlayer(playerState.activeChannel.streamUrl, playerState.activeChannel.name);
   setPlayerStatus("Attempted system-player handoff. Use your computer's native casting routes/devices.", "success");
 }
 
@@ -1449,33 +1896,87 @@ async function onSystemPlayerClick() {
     return;
   }
 
-  await handoffToSystemPlayer(playerState.activeChannel.streamUrl);
+  await handoffToSystemPlayer(playerState.activeChannel.streamUrl, playerState.activeChannel.name);
   setPlayerStatus("Attempted to open in system player.", "success");
 }
 
-async function handoffToSystemPlayer(streamUrl) {
-  const vlcUrl = `vlc://${streamUrl.replace(/^https?:\/\//i, "")}`;
+async function handoffToSystemPlayer(streamUrl, channelName = "IPTV Stream") {
+  const choice = window.prompt(
+    "System Player options:\n1) Try VLC\n2) Download M3U file\n3) Copy Stream URL\n4) Open External tab\n\nEnter 1, 2, 3, or 4:",
+    "2"
+  );
 
-  try {
-    window.location.href = vlcUrl;
-  } catch {
-    // no-op
+  if (!choice) {
+    return;
   }
 
-  if (navigator.share) {
-    try {
-      await navigator.share({
-        title: playerState.activeChannel?.name ?? "IPTV Stream",
-        text: "Open this stream in a system media player",
-        url: streamUrl
-      });
-      return;
-    } catch {
-      // no-op
-    }
+  if (choice === "1") {
+    const vlcUrl = `vlc://${streamUrl.replace(/^https?:\/\//i, "")}`;
+    window.location.href = vlcUrl;
+    return;
+  }
+
+  if (choice === "2") {
+    downloadChannelAsM3u(streamUrl, channelName);
+    return;
+  }
+
+  if (choice === "3") {
+    await copyTextToClipboard(streamUrl);
+    window.alert("Stream URL copied.");
+    return;
   }
 
   window.open(streamUrl, "_blank", "noopener,noreferrer");
+}
+
+function downloadChannelAsM3u(streamUrl, channelName) {
+  const safeName = channelName.replace(/[^a-z0-9-_ ]/gi, "").trim() || "iptv-stream";
+  const content = `#EXTM3U\n#EXTINF:-1,${channelName}\n${streamUrl}\n`;
+  const blob = new Blob([content], { type: "application/x-mpegURL" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+
+  anchor.href = url;
+  anchor.download = `${safeName}.m3u`;
+  anchor.click();
+
+  URL.revokeObjectURL(url);
+}
+
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const input = document.createElement("textarea");
+  input.value = text;
+  input.style.position = "fixed";
+  input.style.opacity = "0";
+  document.body.appendChild(input);
+  input.select();
+  document.execCommand("copy");
+  input.remove();
+}
+
+function extractHttpStatusFromHlsError(data) {
+  const candidates = [
+    data?.response?.code,
+    data?.response?.status,
+    data?.networkDetails?.status,
+    data?.networkDetails?.response?.status,
+    data?.networkDetails?.statusCode
+  ];
+
+  for (const candidate of candidates) {
+    const numeric = Number(candidate);
+    if (Number.isFinite(numeric) && numeric > 0) {
+      return numeric;
+    }
+  }
+
+  return 0;
 }
 
 async function castToChromecast(channel) {
@@ -1710,6 +2211,101 @@ function syncMiniPlayerContainer() {
 
   if (refs.miniPlayer.parentElement !== refs.appShell) {
     refs.appShell.appendChild(refs.miniPlayer);
+  }
+}
+
+function loadBlockedStreamUrls() {
+  try {
+    const raw = localStorage.getItem(BLOCKED_STREAMS_KEY);
+    if (!raw) {
+      return new Set();
+    }
+
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return new Set();
+    }
+
+    return new Set(parsed.filter((value) => typeof value === "string" && value.trim()));
+  } catch {
+    return new Set();
+  }
+}
+
+function saveBlockedStreamUrls() {
+  localStorage.setItem(BLOCKED_STREAMS_KEY, JSON.stringify([...browserBlockedStreamUrls]));
+}
+
+function loadChannelScanResults() {
+  try {
+    const raw = localStorage.getItem(CHANNEL_SCAN_RESULTS_KEY);
+    if (!raw) {
+      return new Map();
+    }
+
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") {
+      return new Map();
+    }
+
+    const map = new Map();
+    Object.entries(parsed).forEach(([url, result]) => {
+      if (
+        typeof url === "string" &&
+        url.trim() &&
+        result &&
+        typeof result === "object" &&
+        ["success", "warning", "error"].includes(result.level) &&
+        typeof result.label === "string"
+      ) {
+        map.set(url, {
+          level: result.level,
+          label: result.label,
+          reason: typeof result.reason === "string" ? result.reason : ""
+        });
+      }
+    });
+
+    return map;
+  } catch {
+    return new Map();
+  }
+}
+
+function saveChannelScanResults() {
+  const data = Object.fromEntries(channelScanResults.entries());
+  localStorage.setItem(CHANNEL_SCAN_RESULTS_KEY, JSON.stringify(data));
+}
+
+function pruneBlockedStreamUrls() {
+  const activeStreamUrls = new Set(state.library.channels.map((channel) => channel.streamUrl));
+  let changed = false;
+
+  for (const url of browserBlockedStreamUrls) {
+    if (!activeStreamUrls.has(url)) {
+      browserBlockedStreamUrls.delete(url);
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    saveBlockedStreamUrls();
+  }
+}
+
+function pruneChannelScanResults() {
+  const activeStreamUrls = new Set(state.library.channels.map((channel) => channel.streamUrl));
+  let changed = false;
+
+  for (const url of channelScanResults.keys()) {
+    if (!activeStreamUrls.has(url)) {
+      channelScanResults.delete(url);
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    saveChannelScanResults();
   }
 }
 

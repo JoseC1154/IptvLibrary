@@ -26,6 +26,8 @@
           <button id="addChannelBtn" class="btn primary">Add Channel</button>
           <button id="addGroupBtn" class="btn">Add Group</button>
           <button id="addPlaylistBtn" class="btn">Add M3U Stream Playlist</button>
+          <button id="scanChannelsBtn" class="btn">Scan Channels</button>
+          <span id="scanStatus" class="scan-status hidden" aria-live="polite"></span>
           <button id="exportBtn" class="btn">Export</button>
           <label class="btn file-btn" for="importInput">Import</label>
           <input id="importInput" type="file" accept="application/json" hidden />
@@ -172,6 +174,10 @@
           <div class="dialog-actions">
             <button id="networkAddBtn" type="submit" class="btn primary">Open URL</button>
           </div>
+          <div class="dialog-actions">
+            <button id="networkScanChannelsBtn" type="button" class="btn">Scan Channels</button>
+            <span id="networkScanStatus" class="scan-status hidden" aria-live="polite"></span>
+          </div>
         </form>
 
         <div id="m3uSearchWrap" class="m3u-search-wrap hidden">
@@ -202,6 +208,7 @@
     <template id="channelCardTemplate">
       <article class="channel-card glass">
         <button class="card-edit btn tiny" type="button">Edit</button>
+        <span class="card-status hidden" aria-live="polite"></span>
         <a class="card-link" target="_blank" rel="noopener noreferrer">
           <img class="card-image" alt="" loading="lazy" />
           <div class="card-info">
@@ -219,6 +226,7 @@
           <div>
             <h4 class="m3u-item-title"></h4>
             <p class="m3u-item-subtitle"></p>
+            <p class="m3u-item-status hidden" aria-live="polite"></p>
           </div>
         </div>
         <div class="m3u-item-actions">
@@ -230,6 +238,7 @@
     </template>
 
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.18/dist/hls.min.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js" defer></script>
     <script src="https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1" async defer></script>
     <script src="app.js" type="module"></script>
   </body>

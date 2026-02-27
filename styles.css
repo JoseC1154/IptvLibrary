@@ -79,6 +79,14 @@ p {
   align-items: stretch;
 }
 
+.scan-status {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.8rem;
+  color: var(--text-1);
+  padding: 0 4px;
+}
+
 .layout {
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr);
@@ -207,6 +215,38 @@ p {
   top: 10px;
   right: 10px;
   z-index: 2;
+}
+
+.card-status {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 2;
+  padding: 5px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 95, 116, 0.6);
+  background: rgba(255, 95, 116, 0.2);
+  color: #ffd6dc;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.card-status.success {
+  border-color: rgba(123, 218, 133, 0.65);
+  background: rgba(123, 218, 133, 0.2);
+  color: #dcffe1;
+}
+
+.card-status.warning {
+  border-color: rgba(255, 196, 94, 0.68);
+  background: rgba(255, 196, 94, 0.2);
+  color: #fff2d7;
+}
+
+.card-status.error {
+  border-color: rgba(255, 95, 116, 0.6);
+  background: rgba(255, 95, 116, 0.2);
+  color: #ffd6dc;
 }
 
 .empty-state {
@@ -444,6 +484,24 @@ p {
   font-size: 0.8rem;
   color: var(--text-1);
   word-break: break-word;
+}
+
+.m3u-item-status {
+  margin-top: 4px;
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+
+.m3u-item-status.success {
+  color: #b8ffca;
+}
+
+.m3u-item-status.warning {
+  color: #ffe7ba;
+}
+
+.m3u-item-status.error {
+  color: #ffd1d8;
 }
 
 .m3u-item-actions {
