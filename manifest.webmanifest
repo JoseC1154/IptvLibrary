@@ -1,0 +1,18 @@
+{
+  "name": "IPTV Library",
+  "short_name": "IPTV Library",
+  "description": "PWA IPTV channel and group manager",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#070a14",
+  "theme_color": "#0b1020",
+  "icons": [
+    {
+      "src": "assets/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

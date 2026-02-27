@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0b1020" />
+    <meta name="description" content="PWA IPTV Link Manager" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" href="assets/icons/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="assets/icons/icon.svg" />
+    <link rel="stylesheet" href="styles.css" />
+    <title>IPTV Library</title>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar glass">
+        <div class="brand">
+          <div class="brand-icon" aria-hidden="true">📺</div>
+          <div>
+            <h1>IPTV Library</h1>
+            <p>Apple TV–style channel manager</p>
+          </div>
+        </div>
+
+        <div class="topbar-actions">
+          <button id="addChannelBtn" class="btn primary">Add Channel</button>
+          <button id="addGroupBtn" class="btn">Add Group</button>
+          <button id="exportBtn" class="btn">Export</button>
+          <label class="btn file-btn" for="importInput">Import</label>
+          <input id="importInput" type="file" accept="application/json" hidden />
+        </div>
+      </header>
+
+      <main class="layout">
+        <aside class="sidebar glass">
+          <div class="sidebar-head">
+            <h2>Channel Groups</h2>
+          </div>
+          <nav id="groupList" class="group-list" aria-label="Channel groups"></nav>
+        </aside>
+
+        <section class="content">
+          <div class="content-head">
+            <h2 id="currentGroupTitle">All Channels</h2>
+            <span id="channelCount" class="count-pill">0 channels</span>
+          </div>
+
+          <div id="channelGrid" class="channel-grid" aria-live="polite"></div>
+          <p id="emptyState" class="empty-state hidden">No channels yet. Add one to get started.</p>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="groupDialog" class="dialog glass">
+      <form id="groupForm" method="dialog" class="form-stack">
+        <h3 id="groupDialogTitle">Add Group</h3>
+        <input type="hidden" id="groupId" />
+
+        <label>
+          Group Name
+          <input id="groupName" type="text" required maxlength="60" placeholder="Kids Channel" />
+        </label>
+
+        <div class="dialog-actions">
+          <button type="button" id="deleteGroupBtn" class="btn danger hidden">Delete</button>
+          <button type="button" class="btn" data-close="groupDialog">Cancel</button>
+          <button type="submit" class="btn primary">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="channelDialog" class="dialog glass">
+      <form id="channelForm" method="dialog" class="form-stack">
+        <h3 id="channelDialogTitle">Add Channel</h3>
+        <input type="hidden" id="channelId" />
+
+        <label>
+          Channel Name
+          <input id="channelName" type="text" required maxlength="80" placeholder="Cartoon Network" />
+        </label>
+
+        <label>
+          Group
+          <select id="channelGroup" required></select>
+        </label>
+
+        <label>
+          IPTV Link URL
+          <input id="channelUrl" type="url" required placeholder="https://example.com/live.m3u8" />
+        </label>
+
+        <label>
+          Custom Photo URL
+          <input id="channelImage" type="url" placeholder="https://images.example.com/poster.jpg" />
+          <p id="channelImageFeedback" class="field-feedback hidden" role="status" aria-live="polite"></p>
+          <img id="channelImagePreview" class="image-preview hidden" alt="Channel image preview" loading="lazy" />
+        </label>
+
+        <div class="dialog-actions">
+          <button type="button" id="deleteChannelBtn" class="btn danger hidden">Delete</button>
+          <button type="button" class="btn" data-close="channelDialog">Cancel</button>
+          <button type="submit" class="btn primary">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <template id="channelCardTemplate">
+      <article class="channel-card glass">
+        <button class="card-edit btn tiny" type="button">Edit</button>
+        <a class="card-link" target="_blank" rel="noopener noreferrer">
+          <img class="card-image" alt="" loading="lazy" />
+          <div class="card-info">
+            <h4 class="card-title"></h4>
+            <p class="card-group"></p>
+          </div>
+        </a>
+      </article>
+    </template>
+
+    <script src="app.js" type="module"></script>
+  </body>
+</html>
