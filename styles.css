@@ -372,6 +372,14 @@ p {
   overflow: auto;
 }
 
+.m3u-search-wrap {
+  display: grid;
+}
+
+.m3u-search-wrap input {
+  width: 100%;
+}
+
 .network-stream-form {
   border-radius: 12px;
   padding: 12px;
@@ -381,6 +389,11 @@ p {
 
 .network-stream-form h4 {
   font-size: 0.95rem;
+}
+
+.network-import-row {
+  display: flex;
+  justify-content: flex-start;
 }
 
 .network-stream-grid {
@@ -475,12 +488,45 @@ p {
   position: fixed;
   right: 16px;
   bottom: 20px;
-  z-index: 30;
+  z-index: 2147483647;
+  isolation: isolate;
   width: min(360px, calc(100vw - 28px));
   border-radius: 14px;
   padding: 10px;
   display: grid;
   gap: 10px;
+  background: linear-gradient(180deg, rgba(10, 15, 30, 0.9), rgba(10, 15, 30, 0.78));
+  -webkit-backdrop-filter: blur(48px) saturate(140%);
+  backdrop-filter: blur(48px) saturate(140%);
+}
+
+#miniPlayer {
+  background: linear-gradient(180deg, rgba(8, 12, 24, 0.94), rgba(8, 12, 24, 0.84));
+  -webkit-backdrop-filter: blur(58px) saturate(145%);
+  backdrop-filter: blur(58px) saturate(145%);
+}
+
+.mini-player.dragging {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.mini-player-drag {
+  width: fit-content;
+  padding: 5px 11px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.2);
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #f4f7ff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+  cursor: grab;
+}
+
+.mini-player.dragging .mini-player-drag {
+  cursor: grabbing;
 }
 
 .mini-player .player-video {

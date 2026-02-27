@@ -29,19 +29,27 @@ const state = {
   library: loadLibrary(),
   selectedGroupId: "all",
   importedM3uChannels: [],
-  lastPreviewedM3uId: ""
+  lastPreviewedM3uId: "",
+  m3uSearchQuery: ""
 };
 
 const playerState = {
   activeChannel: null,
   hlsInstance: null,
   chromecastReady: false,
-  stallRecoveryTimer: null
+  stallRecoveryTimer: null,
+  miniPlayerDrag: {
+    active: false,
+    pointerId: null,
+    offsetX: 0,
+    offsetY: 0
+  }
 };
 
 const failedImageUrls = new Set();
 
 const refs = {
+  appShell: document.querySelector(".app-shell"),
   groupList: document.getElementById("groupList"),
   channelGrid: document.getElementById("channelGrid"),
   currentGroupTitle: document.getElementById("currentGroupTitle"),
@@ -49,7 +57,7 @@ const refs = {
   emptyState: document.getElementById("emptyState"),
   addGroupBtn: document.getElementById("addGroupBtn"),
   addChannelBtn: document.getElementById("addChannelBtn"),
-  networkUrlBtn: document.getElementById("networkUrlBtn"),
+  addPlaylistBtn: document.getElementById("addPlaylistBtn"),
   exportBtn: document.getElementById("exportBtn"),
   importInput: document.getElementById("importInput"),
   m3uImportInput: document.getElementById("m3uImportInput"),
@@ -88,11 +96,13 @@ const refs = {
   nowPlayingOpenBtn: document.getElementById("nowPlayingOpenBtn"),
   nowPlayingCastBtn: document.getElementById("nowPlayingCastBtn"),
   miniPlayer: document.getElementById("miniPlayer"),
+  miniPlayerDragHandle: document.getElementById("miniPlayerDragHandle"),
   miniPlayerVideoHost: document.getElementById("miniPlayerVideoHost"),
   miniPlayerRestoreBtn: document.getElementById("miniPlayerRestoreBtn"),
   miniPlayerStopBtn: document.getElementById("miniPlayerStopBtn"),
   m3uDialog: document.getElementById("m3uDialog"),
   m3uSummary: document.getElementById("m3uSummary"),
+  m3uSearchInput: document.getElementById("m3uSearchInput"),
   m3uList: document.getElementById("m3uList"),
   m3uEmpty: document.getElementById("m3uEmpty"),
   m3uItemTemplate: document.getElementById("m3uItemTemplate"),
@@ -101,8 +111,7 @@ const refs = {
   networkStreamUrl: document.getElementById("networkStreamUrl"),
   networkStreamTitle: document.getElementById("networkStreamTitle"),
   networkStreamGroup: document.getElementById("networkStreamGroup"),
-  networkStreamLogo: document.getElementById("networkStreamLogo"),
-  networkPlayBtn: document.getElementById("networkPlayBtn")
+  networkStreamLogo: document.getElementById("networkStreamLogo")
 };
 
 initialize();
@@ -118,20 +127,22 @@ function initialize() {
 function bindEvents() {
   refs.addGroupBtn.addEventListener("click", () => openGroupDialog());
   refs.addChannelBtn.addEventListener("click", () => openChannelDialog());
-  refs.networkUrlBtn.addEventListener("click", openM3uDialogForNetworkUrl);
+  refs.addPlaylistBtn.addEventListener("click", openM3uDialogForNetworkUrl);
   refs.exportBtn.addEventListener("click", exportLibrary);
   refs.importInput.addEventListener("change", importLibrary);
   refs.m3uImportInput.addEventListener("change", importM3uPlaylist);
   refs.m3uAddAllBtn.addEventListener("click", addAllImportedChannels);
-  refs.networkStreamForm.addEventListener("submit", onNetworkStreamSubmit);
-  refs.networkPlayBtn.addEventListener("click", () => {
-    playNetworkStreamFromForm();
+  refs.m3uSearchInput.addEventListener("input", (event) => {
+    state.m3uSearchQuery = event.target.value.trim().toLowerCase();
+    renderM3uChannels();
   });
+  refs.networkStreamForm.addEventListener("submit", onNetworkStreamSubmit);
   refs.m3uDialog.addEventListener("click", (event) => {
     if (event.target === refs.m3uDialog) {
       refs.m3uDialog.close();
     }
   });
+  refs.m3uDialog.addEventListener("close", syncMiniPlayerContainer);
   refs.m3uDialog.addEventListener("cancel", (event) => {
     event.preventDefault();
     refs.m3uDialog.close();
@@ -153,6 +164,10 @@ function bindEvents() {
   refs.nowPlayingCastBtn.addEventListener("click", onPlayerCastClick);
   refs.miniPlayerRestoreBtn.addEventListener("click", openActiveChannelInPlayer);
   refs.miniPlayerStopBtn.addEventListener("click", stopPlayer);
+  refs.miniPlayerDragHandle.addEventListener("pointerdown", startMiniPlayerDrag);
+  window.addEventListener("pointermove", onMiniPlayerDragMove);
+  window.addEventListener("pointerup", endMiniPlayerDrag);
+  window.addEventListener("pointercancel", endMiniPlayerDrag);
   refs.playerDialog.addEventListener("cancel", (event) => {
     event.preventDefault();
     minimizePlayer();
@@ -492,6 +507,8 @@ async function importM3uPlaylist(event) {
     const parsedChannels = parseM3uText(text);
 
     state.importedM3uChannels = parsedChannels;
+    state.m3uSearchQuery = "";
+    refs.m3uSearchInput.value = "";
     renderM3uChannels();
     refs.m3uDialog.showModal();
 
@@ -643,16 +660,30 @@ function extractNameFromUrl(url) {
 
 function renderM3uChannels() {
   const channels = state.importedM3uChannels;
+  const filteredChannels = state.m3uSearchQuery
+    ? channels.filter((channel) => {
+      const haystack = `${channel.name} ${channel.groupName} ${channel.streamUrl}`.toLowerCase();
+      return haystack.includes(state.m3uSearchQuery);
+    })
+    : channels;
+
   refs.m3uList.textContent = "";
-  refs.m3uAddAllBtn.disabled = channels.length === 0;
+  refs.m3uAddAllBtn.disabled = filteredChannels.length === 0;
 
   refs.m3uSummary.textContent = channels.length
-    ? `${channels.length} channels found`
+    ? state.m3uSearchQuery
+      ? `${filteredChannels.length} of ${channels.length} channels`
+      : `${channels.length} channels found`
     : "No channels found in file.";
 
-  refs.m3uEmpty.classList.toggle("hidden", channels.length > 0);
+  refs.m3uEmpty.classList.toggle("hidden", filteredChannels.length > 0);
+  if (channels.length > 0 && filteredChannels.length === 0 && state.m3uSearchQuery) {
+    refs.m3uEmpty.textContent = "No channels match your search.";
+  } else {
+    refs.m3uEmpty.textContent = "Import an M3U/M3U8 file to view channels.";
+  }
 
-  channels.forEach((channel) => {
+  filteredChannels.forEach((channel) => {
     const row = refs.m3uItemTemplate.content.firstElementChild.cloneNode(true);
     if (channel.id === state.lastPreviewedM3uId) {
       row.classList.add("last-previewed");
@@ -691,6 +722,7 @@ function renderM3uChannels() {
 
       state.lastPreviewedM3uId = channel.id;
       openPlayer(channelForPlay);
+      minimizePlayer();
       renderM3uChannels();
     });
 
@@ -736,20 +768,6 @@ function addAllImportedChannels() {
   window.alert(`Added ${addedCount} channel${addedCount === 1 ? "" : "s"} from playlist.`);
 }
 
-async function playNetworkStreamFromForm() {
-  const networkChannel = buildNetworkChannelFromForm();
-  if (!networkChannel) {
-    return;
-  }
-
-  const loadedPlaylist = await tryLoadPlaylistFromUrl(networkChannel.streamUrl, networkChannel.groupName);
-  if (loadedPlaylist) {
-    return;
-  }
-
-  openPlayer(networkChannel);
-}
-
 async function onNetworkStreamSubmit(event) {
   event.preventDefault();
 
@@ -763,10 +781,7 @@ async function onNetworkStreamSubmit(event) {
     return;
   }
 
-  addImportedChannelToLibrary(networkChannel);
-  renderM3uChannels();
-  refs.networkStreamForm.reset();
-  window.alert(`Added "${networkChannel.name}".`);
+  window.alert("Could not open a playlist from this URL. Please use a direct M3U/M3U8 playlist URL.");
 }
 
 async function tryLoadPlaylistFromUrl(url, fallbackGroupName = "Imported") {
@@ -1174,6 +1189,8 @@ function stopPlayer() {
   refs.playerVideo.load();
   moveVideoToDialogHost();
   refs.miniPlayer.classList.add("hidden");
+  syncMiniPlayerContainer();
+  resetMiniPlayerPosition();
   playerState.activeChannel = null;
   updateNowPlayingBar();
   setPlayerStatus("");
@@ -1193,6 +1210,7 @@ function minimizePlayer() {
 
   moveVideoToMiniHost();
   refs.miniPlayer.classList.remove("hidden");
+  syncMiniPlayerContainer();
 
   if (refs.playerDialog.open) {
     refs.playerDialog.close();
@@ -1493,6 +1511,7 @@ function updateNowPlayingBar() {
   if (!channel) {
     refs.nowPlayingBar.classList.add("hidden");
     refs.miniPlayer.classList.add("hidden");
+    syncMiniPlayerContainer();
     refs.nowPlayingTitle.textContent = "Now Playing";
     refs.nowPlayingSubtitle.textContent = "No channel selected";
     return;
@@ -1516,6 +1535,65 @@ function moveVideoToMiniHost() {
   }
 }
 
+function startMiniPlayerDrag(event) {
+  if (!refs.miniPlayer || refs.miniPlayer.classList.contains("hidden")) {
+    return;
+  }
+
+  const rect = refs.miniPlayer.getBoundingClientRect();
+  playerState.miniPlayerDrag.active = true;
+  playerState.miniPlayerDrag.pointerId = event.pointerId;
+  playerState.miniPlayerDrag.offsetX = event.clientX - rect.left;
+  playerState.miniPlayerDrag.offsetY = event.clientY - rect.top;
+
+  refs.miniPlayer.classList.add("dragging");
+  refs.miniPlayer.style.left = `${rect.left}px`;
+  refs.miniPlayer.style.top = `${rect.top}px`;
+  refs.miniPlayer.style.right = "auto";
+  refs.miniPlayer.style.bottom = "auto";
+
+  refs.miniPlayerDragHandle.setPointerCapture(event.pointerId);
+}
+
+function onMiniPlayerDragMove(event) {
+  const dragState = playerState.miniPlayerDrag;
+  if (!dragState.active || dragState.pointerId !== event.pointerId) {
+    return;
+  }
+
+  const miniRect = refs.miniPlayer.getBoundingClientRect();
+  const maxLeft = Math.max(0, window.innerWidth - miniRect.width);
+  const maxTop = Math.max(0, window.innerHeight - miniRect.height);
+
+  const nextLeft = clamp(event.clientX - dragState.offsetX, 0, maxLeft);
+  const nextTop = clamp(event.clientY - dragState.offsetY, 0, maxTop);
+
+  refs.miniPlayer.style.left = `${nextLeft}px`;
+  refs.miniPlayer.style.top = `${nextTop}px`;
+}
+
+function endMiniPlayerDrag(event) {
+  const dragState = playerState.miniPlayerDrag;
+  if (!dragState.active || dragState.pointerId !== event.pointerId) {
+    return;
+  }
+
+  dragState.active = false;
+  dragState.pointerId = null;
+  refs.miniPlayer.classList.remove("dragging");
+}
+
+function resetMiniPlayerPosition() {
+  refs.miniPlayer.style.removeProperty("left");
+  refs.miniPlayer.style.removeProperty("top");
+  refs.miniPlayer.style.removeProperty("right");
+  refs.miniPlayer.style.removeProperty("bottom");
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
 function ensureActiveChannelStillExists() {
   if (!playerState.activeChannel) {
     return;
@@ -1528,6 +1606,21 @@ function ensureActiveChannelStillExists() {
   }
 
   playerState.activeChannel = updatedChannel;
+}
+
+function syncMiniPlayerContainer() {
+  const miniIsVisible = !refs.miniPlayer.classList.contains("hidden");
+
+  if (miniIsVisible && refs.m3uDialog.open) {
+    if (refs.miniPlayer.parentElement !== refs.m3uDialog) {
+      refs.m3uDialog.appendChild(refs.miniPlayer);
+    }
+    return;
+  }
+
+  if (refs.miniPlayer.parentElement !== refs.appShell) {
+    refs.appShell.appendChild(refs.miniPlayer);
+  }
 }
 
 function applyImageWithFallback(imageElement, imageUrl, altText) {

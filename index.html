@@ -25,9 +25,7 @@
         <div class="topbar-actions">
           <button id="addChannelBtn" class="btn primary">Add Channel</button>
           <button id="addGroupBtn" class="btn">Add Group</button>
-          <button id="networkUrlBtn" class="btn">Network URL</button>
-          <label class="btn file-btn" for="m3uImportInput">Import M3U</label>
-          <input id="m3uImportInput" type="file" accept=".m3u,.m3u8,audio/x-mpegurl,application/vnd.apple.mpegurl,text/plain" hidden />
+          <button id="addPlaylistBtn" class="btn">Add M3U Stream Playlist</button>
           <button id="exportBtn" class="btn">Export</button>
           <label class="btn file-btn" for="importInput">Import</label>
           <input id="importInput" type="file" accept="application/json" hidden />
@@ -159,8 +157,16 @@
           </div>
         </div>
 
+        <div class="m3u-search-wrap">
+          <input id="m3uSearchInput" type="search" placeholder="Search channels, groups, or URL..." />
+        </div>
+
         <form id="networkStreamForm" class="network-stream-form glass">
           <h4>Add Network Stream URL</h4>
+          <div class="network-import-row">
+            <label class="btn file-btn" for="m3uImportInput">Import M3U File</label>
+            <input id="m3uImportInput" type="file" accept=".m3u,.m3u8,audio/x-mpegurl,application/vnd.apple.mpegurl,text/plain" hidden />
+          </div>
           <input id="networkStreamUrl" type="url" placeholder="https://example.com/live.m3u8" required />
           <div class="network-stream-grid">
             <input id="networkStreamTitle" type="text" maxlength="80" placeholder="Channel title (optional)" />
@@ -168,8 +174,7 @@
           </div>
           <input id="networkStreamLogo" type="url" placeholder="Logo URL (optional)" />
           <div class="dialog-actions">
-            <button id="networkPlayBtn" type="button" class="btn">Play URL</button>
-            <button id="networkAddBtn" type="submit" class="btn primary">Add URL</button>
+            <button id="networkAddBtn" type="submit" class="btn primary">Open URL</button>
           </div>
         </form>
 
@@ -184,6 +189,7 @@
     </dialog>
 
     <section id="miniPlayer" class="mini-player glass hidden" aria-live="polite">
+      <div id="miniPlayerDragHandle" class="mini-player-drag" role="button" aria-label="Drag mini player">Drag</div>
       <div id="miniPlayerVideoHost" class="mini-player-video-host"></div>
       <div class="mini-player-actions">
         <button id="miniPlayerRestoreBtn" type="button" class="btn tiny">Restore</button>
