@@ -32,6 +32,7 @@ A GitHub-friendly Progressive Web App to organize IPTV links into channel groups
   - System player handoff (for native device routing/casting outside browser)
 - Export your full library to JSON
 - Import library from JSON
+- Export/import now includes scan metadata (blocked URLs, scan statuses, imported playlist scan/filter state)
 - Works offline after first load (service worker)
 - Installable as a PWA
 
@@ -90,6 +91,7 @@ Library exports use this JSON shape:
 ## Notes
 
 - Data is stored in browser local storage.
+- Export files remain backward-compatible: old library-only JSON imports still work.
 - Image links can be any public internet image URL (`https://...`).
 - Channel cards open in the in-app player. Use **Open External** for a direct link.
 - M3U import picks channel title from `tvg-name`, `EXTINF` title, then URL fallback.

@@ -551,7 +551,7 @@ function deleteCurrentChannel() {
 }
 
 function exportLibrary() {
-  const data = JSON.stringify(state.library, null, 2);
+  const data = JSON.stringify(buildExportPayload(), null, 2);
   const blob = new Blob([data], { type: "application/json" });
   const url = URL.createObjectURL(blob);
 
@@ -1127,20 +1127,170 @@ async function importLibrary(event) {
     const text = await file.text();
     const imported = JSON.parse(text);
 
-    if (!isValidLibrary(imported)) {
+    const importedState = parseImportedState(imported);
+    if (!importedState) {
       throw new Error("Invalid file format");
     }
 
-    state.library = normalizeLibrary(imported);
+    state.library = importedState.library;
     state.selectedGroupId = "all";
-    pruneBlockedStreamUrls();
+    browserBlockedStreamUrls.clear();
+    importedState.blockedStreamUrls.forEach((url) => browserBlockedStreamUrls.add(url));
+
+    channelScanResults.clear();
+    importedState.channelScanResults.forEach((result, url) => channelScanResults.set(url, result));
+
+    state.importedM3uChannels = importedState.importedM3uState.channels;
+    state.importedM3uScanResults = importedState.importedM3uState.scanResults;
+    state.m3uSearchQuery = importedState.importedM3uState.searchQuery;
+    state.m3uScanFilter = importedState.importedM3uState.scanFilter;
+    state.m3uVisibleCount = state.m3uPageSize;
+
+    refs.m3uSearchInput.value = state.m3uSearchQuery;
+    refs.m3uScanFilter.value = state.m3uScanFilter;
+
+    saveBlockedStreamUrls();
+    saveChannelScanResults();
+    saveImportedM3uState();
     saveLibrary();
+    setImportedScanStatus("");
+    renderM3uChannels();
     render();
   } catch (error) {
     window.alert("Import failed. Please use a valid exported library JSON file.");
   } finally {
     refs.importInput.value = "";
   }
+}
+
+function buildExportPayload() {
+  return {
+    exportVersion: 2,
+    exportedAt: new Date().toISOString(),
+    library: state.library,
+    blockedStreamUrls: [...browserBlockedStreamUrls],
+    channelScanResults: Object.fromEntries(channelScanResults.entries()),
+    importedM3uState: {
+      channels: state.importedM3uChannels,
+      scanResults: Object.fromEntries(state.importedM3uScanResults.entries()),
+      searchQuery: state.m3uSearchQuery,
+      scanFilter: state.m3uScanFilter
+    }
+  };
+}
+
+function parseImportedState(value) {
+  const libraryValue = value?.library ?? value;
+  if (!isValidLibrary(libraryValue)) {
+    return null;
+  }
+
+  const library = normalizeLibrary(libraryValue);
+  const libraryUrls = new Set(library.channels.map((channel) => channel.streamUrl));
+
+  const blockedStreamUrls = normalizeBlockedStreamUrls(value?.blockedStreamUrls, libraryUrls);
+  const channelScanMap = normalizeScanResultsMap(value?.channelScanResults, libraryUrls);
+  const importedM3uState = normalizeImportedM3uState(value?.importedM3uState);
+
+  return {
+    library,
+    blockedStreamUrls,
+    channelScanResults: channelScanMap,
+    importedM3uState
+  };
+}
+
+function normalizeBlockedStreamUrls(rawBlockedUrls, allowedUrls = null) {
+  if (!Array.isArray(rawBlockedUrls)) {
+    return new Set();
+  }
+
+  return new Set(
+    rawBlockedUrls.filter((url) => {
+      if (typeof url !== "string" || !url.trim()) {
+        return false;
+      }
+
+      return allowedUrls ? allowedUrls.has(url) : true;
+    })
+  );
+}
+
+function normalizeScanResultsMap(rawScanResults, allowedUrls = null) {
+  const scanMap = new Map();
+  if (!rawScanResults || typeof rawScanResults !== "object") {
+    return scanMap;
+  }
+
+  Object.entries(rawScanResults).forEach(([url, result]) => {
+    if (
+      typeof url !== "string" ||
+      !url.trim() ||
+      !result ||
+      typeof result !== "object" ||
+      !["success", "warning", "error"].includes(result.level) ||
+      typeof result.label !== "string"
+    ) {
+      return;
+    }
+
+    if (allowedUrls && !allowedUrls.has(url)) {
+      return;
+    }
+
+    scanMap.set(url, {
+      level: result.level,
+      label: result.label,
+      reason: typeof result.reason === "string" ? result.reason : ""
+    });
+  });
+
+  return scanMap;
+}
+
+function normalizeImportedM3uState(rawImportedState) {
+  const fallback = {
+    channels: [],
+    scanResults: new Map(),
+    searchQuery: "",
+    scanFilter: "all"
+  };
+
+  if (!rawImportedState || typeof rawImportedState !== "object") {
+    return fallback;
+  }
+
+  const channels = Array.isArray(rawImportedState.channels)
+    ? rawImportedState.channels
+      .filter((channel) =>
+        channel &&
+        typeof channel.id === "string" &&
+        typeof channel.name === "string" &&
+        typeof channel.streamUrl === "string"
+      )
+      .map((channel) => ({
+        id: channel.id,
+        name: channel.name,
+        streamUrl: channel.streamUrl,
+        imageUrl: typeof channel.imageUrl === "string" ? channel.imageUrl : "",
+        groupName: typeof channel.groupName === "string" && channel.groupName.trim() ? channel.groupName : "Imported"
+      }))
+    : [];
+
+  const importedUrls = new Set(channels.map((channel) => channel.streamUrl));
+  const scanResults = normalizeScanResultsMap(rawImportedState.scanResults, importedUrls);
+
+  const allowedFilters = new Set(["all", "not-scanned", "reachable", "cors", "404", "country", "blocked", "issues"]);
+  const scanFilter = typeof rawImportedState.scanFilter === "string" && allowedFilters.has(rawImportedState.scanFilter)
+    ? rawImportedState.scanFilter
+    : "all";
+
+  return {
+    channels,
+    scanResults,
+    searchQuery: typeof rawImportedState.searchQuery === "string" ? rawImportedState.searchQuery.toLowerCase() : "",
+    scanFilter
+  };
 }
 
 function loadLibrary() {
@@ -2470,11 +2620,7 @@ function loadBlockedStreamUrls() {
     }
 
     const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) {
-      return new Set();
-    }
-
-    return new Set(parsed.filter((value) => typeof value === "string" && value.trim()));
+    return normalizeBlockedStreamUrls(parsed);
   } catch {
     return new Set();
   }
@@ -2492,29 +2638,7 @@ function loadChannelScanResults() {
     }
 
     const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") {
-      return new Map();
-    }
-
-    const map = new Map();
-    Object.entries(parsed).forEach(([url, result]) => {
-      if (
-        typeof url === "string" &&
-        url.trim() &&
-        result &&
-        typeof result === "object" &&
-        ["success", "warning", "error"].includes(result.level) &&
-        typeof result.label === "string"
-      ) {
-        map.set(url, {
-          level: result.level,
-          label: result.label,
-          reason: typeof result.reason === "string" ? result.reason : ""
-        });
-      }
-    });
-
-    return map;
+    return normalizeScanResultsMap(parsed);
   } catch {
     return new Map();
   }
@@ -2526,74 +2650,17 @@ function saveChannelScanResults() {
 }
 
 function loadImportedM3uState() {
-  const fallback = {
-    channels: [],
-    scanResults: new Map(),
-    searchQuery: "",
-    scanFilter: "all"
-  };
-
   try {
     const raw = localStorage.getItem(IMPORTED_M3U_STATE_KEY);
     if (!raw) {
-      return fallback;
+      return normalizeImportedM3uState();
     }
 
     const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") {
-      return fallback;
-    }
 
-    const channels = Array.isArray(parsed.channels)
-      ? parsed.channels
-        .filter((channel) =>
-          channel &&
-          typeof channel.id === "string" &&
-          typeof channel.name === "string" &&
-          typeof channel.streamUrl === "string"
-        )
-        .map((channel) => ({
-          id: channel.id,
-          name: channel.name,
-          streamUrl: channel.streamUrl,
-          imageUrl: typeof channel.imageUrl === "string" ? channel.imageUrl : "",
-          groupName: typeof channel.groupName === "string" && channel.groupName.trim() ? channel.groupName : "Imported"
-        }))
-      : [];
-
-    const scanResults = new Map();
-    if (parsed.scanResults && typeof parsed.scanResults === "object") {
-      Object.entries(parsed.scanResults).forEach(([url, result]) => {
-        if (
-          typeof url === "string" &&
-          url.trim() &&
-          result &&
-          typeof result === "object" &&
-          ["success", "warning", "error"].includes(result.level) &&
-          typeof result.label === "string"
-        ) {
-          scanResults.set(url, {
-            level: result.level,
-            label: result.label,
-            reason: typeof result.reason === "string" ? result.reason : ""
-          });
-        }
-      });
-    }
-
-    const allowedFilters = new Set(["all", "not-scanned", "reachable", "cors", "404", "country", "blocked", "issues"]);
-    const scanFilter = typeof parsed.scanFilter === "string" && allowedFilters.has(parsed.scanFilter)
-      ? parsed.scanFilter
-      : "all";
-
-    return {
-      channels,
-      scanResults,
-      searchQuery: typeof parsed.searchQuery === "string" ? parsed.searchQuery.toLowerCase() : "",
-      scanFilter
-    };
+    return normalizeImportedM3uState(parsed);
   } catch {
-    return fallback;
+    return normalizeImportedM3uState();
   }
 }
 
