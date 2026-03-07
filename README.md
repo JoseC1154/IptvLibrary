@@ -114,3 +114,4 @@ Library exports use this JSON shape:
 -when in minimized form the channel windows should be pushed in oppropriate directions dynamically that way they are never covered by the minimized stream.
 -different aspect ratios looper, one aspect should maximize in tab only.
 -if a channel already exist in the added there should be an indication of such.
+-should be able to stretch player from sides. 
