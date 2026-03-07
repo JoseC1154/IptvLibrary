@@ -108,7 +108,8 @@ Library exports use this JSON shape:
 -should be able to amplify volume like vlc player.
 -should be able to take a screen shot from stream to set as channel Thumbnail.
 -should be able to export json or another m3u file.
--settings menu
+-settings menu.
+-should also be able to detach the player that way it is open over other tabs. setting should be placed in the aspect ration loop.
 -bottom bar with the play cast button should be small to the side.
 -when in minimized form the channel windows should be pushed in oppropriate directions dynamically that way they are never covered by the minimized stream.
 -different aspect ratios looper, one aspect should maximize in tab only.
