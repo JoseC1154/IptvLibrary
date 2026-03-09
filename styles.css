@@ -142,6 +142,8 @@ p {
 
 .content {
   min-width: 0;
+  padding-right: var(--content-mini-inset-right, 0px);
+  padding-bottom: var(--content-mini-inset-bottom, 0px);
 }
 
 .content-head {
@@ -178,6 +180,11 @@ p {
 .channel-card:focus-within {
   transform: translateY(-4px) scale(1.01);
   box-shadow: 0 14px 36px rgba(0, 0, 0, 0.38);
+}
+
+.channel-card.playing {
+  border: 1px solid rgba(123, 218, 133, 0.9);
+  box-shadow: 0 0 0 1px rgba(123, 218, 133, 0.4) inset, 0 10px 30px rgba(68, 172, 89, 0.28);
 }
 
 .card-link {
@@ -255,15 +262,17 @@ p {
 }
 
 .now-playing {
-  position: sticky;
-  bottom: 10px;
+  position: fixed;
+  right: 16px;
+  bottom: 20px;
   z-index: 20;
   border-radius: 16px;
-  padding: 12px 14px;
+  padding: 10px 12px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  width: min(360px, calc(100vw - 28px));
 }
 
 .now-playing-info h3 {
@@ -278,6 +287,11 @@ p {
 .now-playing-actions {
   display: flex;
   gap: 8px;
+}
+
+.now-playing-actions .btn {
+  padding: 7px 10px;
+  font-size: 0.8rem;
 }
 
 .btn {
@@ -365,6 +379,10 @@ p {
 
 .player-dialog {
   width: min(980px, calc(100vw - 30px));
+  resize: both;
+  overflow: auto;
+  min-width: min(520px, calc(100vw - 30px));
+  min-height: 360px;
 }
 
 .m3u-dialog {
@@ -552,6 +570,41 @@ p {
   width: 100%;
 }
 
+.player-video-host.aspect-fit .player-video {
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+}
+
+.player-video-host.aspect-contain .player-video {
+  aspect-ratio: auto;
+  width: 100%;
+  max-height: min(62vh, 68vw);
+  object-fit: contain;
+  background: #000;
+}
+
+.player-video-host.aspect-cover .player-video {
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+}
+
+.player-video-host.aspect-fill .player-video {
+  aspect-ratio: 16 / 9;
+  object-fit: fill;
+}
+
+.player-video-host.aspect-tab-max .player-video {
+  aspect-ratio: auto;
+  width: 100%;
+  height: min(76vh, 74vw);
+  object-fit: contain;
+  background: #000;
+}
+
+.m3u-item.already-added {
+  border: 1px solid rgba(123, 218, 133, 0.65);
+}
+
 .mini-player {
   position: fixed;
   right: 16px;
@@ -703,6 +756,10 @@ select:focus {
   }
 
   .now-playing {
+    right: 8px;
+    left: 8px;
+    width: auto;
+    bottom: 10px;
     flex-direction: column;
     align-items: flex-start;
   }

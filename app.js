@@ -4,10 +4,17 @@ const HLS_CDN_URL = "https://cdn.jsdelivr.net/npm/hls.js@1.5.18/dist/hls.min.js"
 const BLOCKED_STREAMS_KEY = "iptv-browser-blocked-streams-v1";
 const CHANNEL_SCAN_RESULTS_KEY = "iptv-channel-scan-results-v1";
 const IMPORTED_M3U_STATE_KEY = "iptv-imported-m3u-state-v1";
+const SETTINGS_KEY = "iptv-settings-v1";
+const CHANNEL_HISTORY_KEY = "iptv-channel-history-v1";
 const CHANNEL_SCAN_TIMEOUT_MS = 8000;
 const CHANNEL_SCAN_CONCURRENCY = 4;
+const ASPECT_MODES = ["fit", "contain", "cover", "fill", "tab-max", "pip"];
+const BOOST_LEVELS = [1, 1.5, 2, 3];
+const CHANNEL_HISTORY_LIMIT = 30;
 
 const persistedImportedM3uState = loadImportedM3uState();
+const persistedSettings = loadSettings();
+const persistedChannelHistory = loadChannelHistory();
 
 const seedData = {
   version: APP_VERSION,
@@ -42,7 +49,9 @@ const state = {
   m3uSearchQuery: persistedImportedM3uState.searchQuery,
   m3uScanFilter: persistedImportedM3uState.scanFilter,
   m3uVisibleCount: 1000,
-  m3uPageSize: 1000
+  m3uPageSize: 1000,
+  settings: persistedSettings,
+  channelHistory: persistedChannelHistory
 };
 
 const playerState = {
@@ -50,6 +59,12 @@ const playerState = {
   hlsInstance: null,
   mpegtsInstance: null,
   chromecastReady: false,
+  audioContext: null,
+  gainNode: null,
+  mediaSourceNode: null,
+  boostIndex: BOOST_LEVELS.findIndex((level) => level === persistedSettings.volumeBoost),
+  aspectMode: persistedSettings.defaultAspect,
+  playbackQueue: [],
   stallRecoveryTimer: null,
   miniPlayerDrag: {
     active: false,
@@ -108,6 +123,7 @@ const refs = {
   playerVideoHost: document.getElementById("playerVideoHost"),
   playerVideo: document.getElementById("playerVideo"),
   playerStatus: document.getElementById("playerStatus"),
+  playerHistoryBtn: document.getElementById("playerHistoryBtn"),
   playerChannelUpBtn: document.getElementById("playerChannelUpBtn"),
   playerChannelDownBtn: document.getElementById("playerChannelDownBtn"),
   playerCastBtn: document.getElementById("playerCastBtn"),
@@ -142,13 +158,31 @@ const refs = {
   networkStreamUrl: document.getElementById("networkStreamUrl"),
   networkStreamTitle: document.getElementById("networkStreamTitle"),
   networkStreamGroup: document.getElementById("networkStreamGroup"),
-  networkStreamLogo: document.getElementById("networkStreamLogo")
+  networkStreamLogo: document.getElementById("networkStreamLogo"),
+  settingsBtn: document.getElementById("settingsBtn"),
+  settingsDialog: document.getElementById("settingsDialog"),
+  settingsForm: document.getElementById("settingsForm"),
+  settingsDefaultAspect: document.getElementById("settingsDefaultAspect"),
+  settingsAvoidMiniOverlap: document.getElementById("settingsAvoidMiniOverlap"),
+  settingsAutoPipOnMinimize: document.getElementById("settingsAutoPipOnMinimize"),
+  playerAspectBtn: document.getElementById("playerAspectBtn"),
+  playerBoostBtn: document.getElementById("playerBoostBtn"),
+  playerScreenshotBtn: document.getElementById("playerScreenshotBtn"),
+  playerPipBtn: document.getElementById("playerPipBtn"),
+  historyDialog: document.getElementById("historyDialog"),
+  historyList: document.getElementById("historyList"),
+  historyEmpty: document.getElementById("historyEmpty"),
+  historyClearBtn: document.getElementById("historyClearBtn")
 };
 
 initialize();
 
 function initialize() {
   bindEvents();
+  hydrateSettingsUi();
+  applyAspectMode(playerState.aspectMode);
+  updateBoostButton();
+  updatePipButton();
   render();
   updateNowPlayingBar();
   initializeCastSupport();
@@ -162,6 +196,7 @@ function bindEvents() {
   refs.scanChannelsBtn?.addEventListener("click", scanChannels);
   refs.networkScanChannelsBtn?.addEventListener("click", scanImportedM3uChannels);
   refs.exportBtn.addEventListener("click", exportLibrary);
+  refs.settingsBtn?.addEventListener("click", openSettingsDialog);
   refs.importInput.addEventListener("change", importLibrary);
   refs.m3uImportInput.addEventListener("change", importM3uPlaylist);
   refs.m3uAddAllBtn.addEventListener("click", addAllImportedChannels);
@@ -205,6 +240,11 @@ function bindEvents() {
   refs.playerSystemBtn.addEventListener("click", onSystemPlayerClick);
   refs.playerChannelUpBtn.addEventListener("click", () => switchPlayerChannel(-1));
   refs.playerChannelDownBtn.addEventListener("click", () => switchPlayerChannel(1));
+  refs.playerHistoryBtn?.addEventListener("click", openHistoryDialog);
+  refs.playerAspectBtn?.addEventListener("click", cycleAspectMode);
+  refs.playerBoostBtn?.addEventListener("click", cycleVolumeBoost);
+  refs.playerScreenshotBtn?.addEventListener("click", capturePlayerScreenshot);
+  refs.playerPipBtn?.addEventListener("click", togglePictureInPicture);
   refs.playerCloseBtn.addEventListener("click", minimizePlayer);
   refs.playerStopBtn.addEventListener("click", stopPlayer);
   refs.nowPlayingOpenBtn.addEventListener("click", openActiveChannelInPlayer);
@@ -217,6 +257,8 @@ function bindEvents() {
   window.addEventListener("pointermove", onMiniPlayerDragMove);
   window.addEventListener("pointerup", endMiniPlayerDrag);
   window.addEventListener("pointercancel", endMiniPlayerDrag);
+  window.addEventListener("resize", () => updateContentInsetsForMiniPlayer());
+  refs.settingsForm?.addEventListener("submit", onSettingsSubmit);
   refs.playerDialog.addEventListener("cancel", (event) => {
     event.preventDefault();
     minimizePlayer();
@@ -234,6 +276,9 @@ function bindEvents() {
   });
   refs.playerVideo.addEventListener("waiting", tryRecoverPlayback);
   refs.playerVideo.addEventListener("stalled", tryRecoverPlayback);
+  refs.playerVideo.addEventListener("enterpictureinpicture", updatePipButton);
+  refs.playerVideo.addEventListener("leavepictureinpicture", updatePipButton);
+  refs.historyClearBtn?.addEventListener("click", clearChannelHistory);
 
   document.querySelectorAll("[data-close]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -296,10 +341,12 @@ function renderChannels() {
   refs.currentGroupTitle.textContent = selectedGroupName;
   refs.channelCount.textContent = `${channels.length} channel${channels.length === 1 ? "" : "s"}`;
   refs.emptyState.classList.toggle("hidden", channels.length > 0);
+  const visibleQueue = channels.map((channel) => mapLibraryChannelToPlaybackChannel(channel));
 
   channels.forEach((channel) => {
     const card = refs.channelCardTemplate.content.firstElementChild.cloneNode(true);
     const groupName = state.library.groups.find((group) => group.id === channel.groupId)?.name ?? "Unassigned";
+    const isPlaying = isSamePlaybackChannel(channel, playerState.activeChannel);
 
     const editBtn = card.querySelector(".card-edit");
     const link = card.querySelector(".card-link");
@@ -307,6 +354,9 @@ function renderChannels() {
     const title = card.querySelector(".card-title");
     const groupText = card.querySelector(".card-group");
     const statusBadge = card.querySelector(".card-status");
+
+    card.classList.toggle("playing", isPlaying);
+    card.setAttribute("aria-current", isPlaying ? "true" : "false");
 
     editBtn.addEventListener("click", () => openChannelDialog(channel.id));
     link.href = channel.streamUrl;
@@ -316,7 +366,7 @@ function renderChannels() {
       }
 
       event.preventDefault();
-      openPlayer(channel);
+      openPlayer(channel, visibleQueue, { keepPresentation: Boolean(playerState.activeChannel) });
     });
 
     if (channel.imageUrl) {
@@ -551,18 +601,45 @@ function deleteCurrentChannel() {
 }
 
 function exportLibrary() {
-  const data = JSON.stringify(buildExportPayload(), null, 2);
-  const blob = new Blob([data], { type: "application/json" });
+  const choice = window.prompt("Export format:\n1) JSON\n2) M3U\n\nEnter 1 or 2:", "1");
+  if (!choice) {
+    return;
+  }
+
+  const date = new Date().toISOString().split("T")[0];
+  const link = document.createElement("a");
+  let blob;
+
+  if (choice === "2") {
+    const m3uContent = buildM3uExportContent();
+    blob = new Blob([m3uContent], { type: "application/x-mpegURL" });
+    link.download = `iptv-library-${date}.m3u`;
+  } else {
+    const data = JSON.stringify(buildExportPayload(), null, 2);
+    blob = new Blob([data], { type: "application/json" });
+    link.download = `iptv-library-${date}.json`;
+  }
+
   const url = URL.createObjectURL(blob);
 
-  const link = document.createElement("a");
-  const date = new Date().toISOString().split("T")[0];
-
   link.href = url;
-  link.download = `iptv-library-${date}.json`;
   link.click();
 
   URL.revokeObjectURL(url);
+}
+
+function buildM3uExportContent() {
+  const lines = ["#EXTM3U"];
+
+  state.library.channels.forEach((channel) => {
+    const groupName = state.library.groups.find((group) => group.id === channel.groupId)?.name ?? "Imported";
+    const logoPart = channel.imageUrl ? ` tvg-logo=\"${channel.imageUrl}\"` : "";
+    const groupPart = groupName ? ` group-title=\"${groupName}\"` : "";
+    lines.push(`#EXTINF:-1${logoPart}${groupPart},${channel.name}`);
+    lines.push(channel.streamUrl);
+  });
+
+  return `${lines.join("\n")}\n`;
 }
 
 async function importM3uPlaylist(event) {
@@ -815,6 +892,7 @@ function renderM3uChannels() {
     }
 
     playBtn.addEventListener("click", () => {
+      const hadActiveChannel = Boolean(playerState.activeChannel);
       const channelForPlay = {
         id: channel.id,
         name: channel.name,
@@ -822,10 +900,13 @@ function renderM3uChannels() {
         streamUrl: channel.streamUrl,
         imageUrl: channel.imageUrl
       };
+      const filteredQueue = filteredChannels.map(mapImportedChannelToPlaybackChannel);
 
       state.lastPreviewedM3uId = channel.id;
-      openPlayer(channelForPlay);
-      minimizePlayer();
+      openPlayer(channelForPlay, filteredQueue, { keepPresentation: hadActiveChannel });
+      if (!hadActiveChannel) {
+        minimizePlayer();
+      }
       renderM3uChannels();
     });
 
@@ -838,6 +919,8 @@ function renderM3uChannels() {
     });
 
     if (alreadyAdded) {
+      row.classList.add("already-added");
+      subtitle.textContent = `${channel.groupName} • Already in library`;
       addBtn.textContent = "Added";
       addBtn.disabled = true;
       groupSelect.disabled = true;
@@ -1811,12 +1894,23 @@ async function registerServiceWorker() {
   }
 }
 
-function openPlayer(channel) {
+function openPlayer(channel, playbackQueue = null, options = {}) {
   if (!channel?.streamUrl) {
     return;
   }
 
+  const keepPresentation = Boolean(options.keepPresentation);
+  const miniWasVisible = !refs.miniPlayer.classList.contains("hidden");
+  const dialogWasOpen = refs.playerDialog.open;
+
   playerState.activeChannel = channel;
+  if (Array.isArray(playbackQueue) && playbackQueue.length > 0) {
+    playerState.playbackQueue = playbackQueue.map((item) => normalizePlaybackChannel(item)).filter(Boolean);
+  } else if (!Array.isArray(playerState.playbackQueue) || playerState.playbackQueue.length === 0) {
+    playerState.playbackQueue = getFallbackPlaybackQueue();
+  }
+
+  recordChannelHistory(channel);
   updateNowPlayingBar();
   refs.playerTitle.textContent = channel.name;
 
@@ -1827,12 +1921,25 @@ function openPlayer(channel) {
   setPlayerStatus("");
   updateCastButtonVisibility();
   updatePlayerChannelButtons();
-  moveVideoToDialogHost();
-  refs.miniPlayer.classList.add("hidden");
-
-  if (!refs.playerDialog.open) {
-    refs.playerDialog.showModal();
+  if (keepPresentation && miniWasVisible) {
+    moveVideoToMiniHost();
+    refs.miniPlayer.classList.remove("hidden");
+    syncMiniPlayerContainer();
+    if (refs.playerDialog.open) {
+      refs.playerDialog.close();
+    }
+  } else {
+    moveVideoToDialogHost();
+    refs.miniPlayer.classList.add("hidden");
+    if (!refs.playerDialog.open) {
+      refs.playerDialog.showModal();
+    }
   }
+
+  updateContentInsetsForMiniPlayer();
+  applyAspectMode(playerState.aspectMode);
+  updatePipButton();
+  renderChannels();
 
   startVideoPlayback(channel.streamUrl);
 }
@@ -1842,16 +1949,24 @@ function stopPlayer() {
   destroyHlsInstance();
   destroyMpegtsInstance();
   refs.playerVideo.pause();
+  if (document.pictureInPictureElement === refs.playerVideo && document.exitPictureInPicture) {
+    document.exitPictureInPicture().catch(() => {
+      // no-op
+    });
+  }
   refs.playerVideo.removeAttribute("src");
   refs.playerVideo.load();
   moveVideoToDialogHost();
   refs.miniPlayer.classList.add("hidden");
   syncMiniPlayerContainer();
   resetMiniPlayerPosition();
+  updateContentInsetsForMiniPlayer();
   playerState.activeChannel = null;
+  playerState.playbackQueue = [];
   updateNowPlayingBar();
   updatePlayerChannelButtons();
   setPlayerStatus("");
+  renderChannels();
 
   if (refs.playerDialog.open) {
     refs.playerDialog.close();
@@ -1869,6 +1984,11 @@ function minimizePlayer() {
   moveVideoToMiniHost();
   refs.miniPlayer.classList.remove("hidden");
   syncMiniPlayerContainer();
+  updateContentInsetsForMiniPlayer();
+
+  if (state.settings.autoPipOnMinimize) {
+    togglePictureInPicture(true);
+  }
 
   if (refs.playerDialog.open) {
     refs.playerDialog.close();
@@ -1880,7 +2000,293 @@ function openActiveChannelInPlayer() {
     return;
   }
 
-  openPlayer(playerState.activeChannel);
+  openPlayer(playerState.activeChannel, playerState.playbackQueue);
+}
+
+function cycleAspectMode() {
+  const currentIndex = Math.max(0, ASPECT_MODES.indexOf(playerState.aspectMode));
+  const nextMode = ASPECT_MODES[(currentIndex + 1) % ASPECT_MODES.length];
+  playerState.aspectMode = nextMode;
+  state.settings.defaultAspect = nextMode;
+  saveSettings();
+  hydrateSettingsUi();
+  applyAspectMode(nextMode);
+
+  if (nextMode === "tab-max") {
+    setPlayerStatus("Aspect mode set to Max in Tab.", "success");
+  }
+}
+
+function applyAspectMode(mode) {
+  const safeMode = ASPECT_MODES.includes(mode) ? mode : "fit";
+  playerState.aspectMode = safeMode;
+  refs.playerVideoHost.classList.remove(
+    "aspect-fit",
+    "aspect-contain",
+    "aspect-cover",
+    "aspect-fill",
+    "aspect-tab-max"
+  );
+  if (safeMode !== "pip") {
+    refs.playerVideoHost.classList.add(`aspect-${safeMode}`);
+  }
+  refs.playerAspectBtn.textContent = `Aspect: ${formatAspectLabel(safeMode)}`;
+
+  if (safeMode === "pip") {
+    togglePictureInPicture(true);
+  }
+}
+
+function formatAspectLabel(mode) {
+  switch (mode) {
+    case "contain":
+      return "Contain";
+    case "cover":
+      return "Cover";
+    case "fill":
+      return "Stretch";
+    case "tab-max":
+      return "Max Tab";
+    case "pip":
+      return "Detach";
+    default:
+      return "16:9";
+  }
+}
+
+async function cycleVolumeBoost() {
+  await initializeAudioBoostGraph();
+
+  const baseIndex = playerState.boostIndex >= 0 ? playerState.boostIndex : 0;
+  playerState.boostIndex = (baseIndex + 1) % BOOST_LEVELS.length;
+  const gainValue = BOOST_LEVELS[playerState.boostIndex];
+
+  if (playerState.gainNode) {
+    playerState.gainNode.gain.value = gainValue;
+  }
+
+  state.settings.volumeBoost = gainValue;
+  saveSettings();
+  updateBoostButton();
+}
+
+function updateBoostButton() {
+  const currentLevel = Number(state.settings.volumeBoost) || 1;
+  const levelPct = Math.round(currentLevel * 100);
+  refs.playerBoostBtn.textContent = `Boost: ${levelPct}%`;
+}
+
+async function initializeAudioBoostGraph() {
+  if (playerState.gainNode && playerState.audioContext && playerState.mediaSourceNode) {
+    if (playerState.audioContext.state === "suspended") {
+      await playerState.audioContext.resume();
+    }
+    return;
+  }
+
+  const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextCtor) {
+    setPlayerStatus("Audio boost is not supported in this browser.", "error");
+    return;
+  }
+
+  try {
+    const audioContext = new AudioContextCtor();
+    const sourceNode = audioContext.createMediaElementSource(refs.playerVideo);
+    const gainNode = audioContext.createGain();
+
+    sourceNode.connect(gainNode);
+    gainNode.connect(audioContext.destination);
+
+    playerState.audioContext = audioContext;
+    playerState.mediaSourceNode = sourceNode;
+    playerState.gainNode = gainNode;
+    playerState.boostIndex = Math.max(0, BOOST_LEVELS.findIndex((level) => level === state.settings.volumeBoost));
+    gainNode.gain.value = BOOST_LEVELS[playerState.boostIndex];
+
+    if (audioContext.state === "suspended") {
+      await audioContext.resume();
+    }
+  } catch {
+    setPlayerStatus("Could not initialize audio boost.", "error");
+  }
+}
+
+function capturePlayerScreenshot() {
+  if (!playerState.activeChannel) {
+    setPlayerStatus("Open a channel first.", "error");
+    return;
+  }
+
+  const video = refs.playerVideo;
+  if (!video.videoWidth || !video.videoHeight) {
+    setPlayerStatus("Wait for video frames before taking a screenshot.", "error");
+    return;
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    setPlayerStatus("Screenshot capture failed.", "error");
+    return;
+  }
+
+  try {
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
+
+    const libraryChannel = state.library.channels.find((channel) => channel.id === playerState.activeChannel.id);
+    if (libraryChannel) {
+      libraryChannel.imageUrl = dataUrl;
+      playerState.activeChannel = libraryChannel;
+      saveLibrary();
+      render();
+    }
+
+    const download = document.createElement("a");
+    const safeName = playerState.activeChannel.name.replace(/[^a-z0-9-_ ]/gi, "").trim() || "channel";
+    download.href = dataUrl;
+    download.download = `${safeName}-thumbnail.jpg`;
+    download.click();
+
+    setPlayerStatus("Screenshot captured and set as thumbnail.", "success");
+  } catch {
+    setPlayerStatus("Screenshot blocked by stream security/CORS policy.", "error");
+  }
+}
+
+async function togglePictureInPicture(forceEnable = false) {
+  if (!document.pictureInPictureEnabled) {
+    setPlayerStatus("PiP is not supported in this browser.", "error");
+    return;
+  }
+
+  if (!playerState.activeChannel) {
+    setPlayerStatus("Open a channel first.", "error");
+    return;
+  }
+
+  try {
+    if (document.pictureInPictureElement === refs.playerVideo && !forceEnable) {
+      await document.exitPictureInPicture();
+      return;
+    }
+
+    if (document.pictureInPictureElement !== refs.playerVideo) {
+      await refs.playerVideo.requestPictureInPicture();
+      setPlayerStatus("Detached to Picture-in-Picture.", "success");
+    }
+  } catch {
+    setPlayerStatus("Picture-in-Picture request failed.", "error");
+  } finally {
+    updatePipButton();
+  }
+}
+
+function updatePipButton() {
+  if (!refs.playerPipBtn) {
+    return;
+  }
+
+  refs.playerPipBtn.textContent = document.pictureInPictureElement === refs.playerVideo
+    ? "Attached"
+    : "Detach (PiP)";
+}
+
+function recordChannelHistory(channel) {
+  const entry = {
+    id: channel.id || createId("history"),
+    name: channel.name || "Channel",
+    groupId: channel.groupId || "",
+    groupName: state.library.groups.find((group) => group.id === channel.groupId)?.name || "Channel",
+    streamUrl: channel.streamUrl,
+    imageUrl: channel.imageUrl || "",
+    playedAt: new Date().toISOString()
+  };
+
+  state.channelHistory = state.channelHistory.filter((item) => !isSamePlaybackChannel(item, entry));
+  state.channelHistory.unshift(entry);
+  if (state.channelHistory.length > CHANNEL_HISTORY_LIMIT) {
+    state.channelHistory = state.channelHistory.slice(0, CHANNEL_HISTORY_LIMIT);
+  }
+
+  saveChannelHistory();
+}
+
+function openHistoryDialog() {
+  renderHistoryDialog();
+  refs.historyDialog.showModal();
+}
+
+function renderHistoryDialog() {
+  refs.historyList.textContent = "";
+  const hasHistory = state.channelHistory.length > 0;
+  refs.historyEmpty.classList.toggle("hidden", hasHistory);
+
+  if (!hasHistory) {
+    return;
+  }
+
+  state.channelHistory.forEach((item) => {
+    const row = document.createElement("article");
+    row.className = "m3u-item glass";
+
+    const main = document.createElement("div");
+    main.className = "m3u-item-main";
+
+    const image = document.createElement("img");
+    image.className = "m3u-item-image";
+    if (item.imageUrl) {
+      applyImageWithFallback(image, item.imageUrl, `${item.name} logo`);
+    } else {
+      image.alt = "Channel logo placeholder";
+    }
+
+    const textWrap = document.createElement("div");
+    const title = document.createElement("h4");
+    title.className = "m3u-item-title";
+    title.textContent = item.name;
+
+    const subtitle = document.createElement("p");
+    subtitle.className = "m3u-item-subtitle";
+    subtitle.textContent = `${item.groupName} • ${new Date(item.playedAt).toLocaleString()}`;
+
+    textWrap.appendChild(title);
+    textWrap.appendChild(subtitle);
+    main.appendChild(image);
+    main.appendChild(textWrap);
+
+    const actions = document.createElement("div");
+    actions.className = "m3u-item-actions";
+    const playBtn = document.createElement("button");
+    playBtn.type = "button";
+    playBtn.className = "btn tiny primary";
+    playBtn.textContent = "Play";
+    playBtn.addEventListener("click", () => {
+      const playable = {
+        id: item.id,
+        name: item.name,
+        groupId: item.groupId,
+        streamUrl: item.streamUrl,
+        imageUrl: item.imageUrl
+      };
+      openPlayer(playable, playerState.playbackQueue, { keepPresentation: Boolean(playerState.activeChannel) });
+      refs.historyDialog.close();
+    });
+    actions.appendChild(playBtn);
+
+    row.appendChild(main);
+    row.appendChild(actions);
+    refs.historyList.appendChild(row);
+  });
+}
+
+function clearChannelHistory() {
+  state.channelHistory = [];
+  saveChannelHistory();
+  renderHistoryDialog();
 }
 
 function switchPlayerChannel(step) {
@@ -1900,7 +2306,7 @@ function switchPlayerChannel(step) {
   const nextIndex = (safeCurrentIndex + step + navigableChannels.length) % navigableChannels.length;
   const nextChannel = navigableChannels[nextIndex];
 
-  openPlayer(nextChannel);
+  openPlayer(nextChannel, navigableChannels, { keepPresentation: true });
 }
 
 function updatePlayerChannelButtons() {
@@ -1918,17 +2324,58 @@ function getNavigablePlaybackChannels() {
     return [];
   }
 
+  const scopedQueue = (playerState.playbackQueue || []).filter(Boolean);
+  const scopedContainsActive = scopedQueue.some((channel) => isSamePlaybackChannel(channel, activeChannel));
+  if (scopedQueue.length && scopedContainsActive) {
+    return scopedQueue;
+  }
+
+  return getFallbackPlaybackQueue();
+}
+
+function getFallbackPlaybackQueue() {
+  const activeChannel = playerState.activeChannel;
+  if (!activeChannel) {
+    return [];
+  }
+
   const filteredImportedChannels = getFilteredImportedM3uChannels();
   const importedContainsActive = filteredImportedChannels.some((channel) => isSamePlaybackChannel(channel, activeChannel));
   if (filteredImportedChannels.length && importedContainsActive) {
     return filteredImportedChannels.map(mapImportedChannelToPlaybackChannel);
   }
 
-  if (state.selectedGroupId === "all") {
-    return [...state.library.channels];
+  if (activeChannel.groupId && state.library.groups.some((group) => group.id === activeChannel.groupId)) {
+    return state.library.channels
+      .filter((channel) => channel.groupId === activeChannel.groupId)
+      .map((channel) => mapLibraryChannelToPlaybackChannel(channel));
   }
 
-  return state.library.channels.filter((channel) => channel.groupId === state.selectedGroupId);
+  if (state.selectedGroupId === "all") {
+    return state.library.channels.map((channel) => mapLibraryChannelToPlaybackChannel(channel));
+  }
+
+  return state.library.channels
+    .filter((channel) => channel.groupId === state.selectedGroupId)
+    .map((channel) => mapLibraryChannelToPlaybackChannel(channel));
+}
+
+function mapLibraryChannelToPlaybackChannel(channel) {
+  return normalizePlaybackChannel(channel);
+}
+
+function normalizePlaybackChannel(channel) {
+  if (!channel?.streamUrl) {
+    return null;
+  }
+
+  return {
+    id: channel.id || createId("playback"),
+    name: channel.name || "Channel",
+    groupId: channel.groupId || "",
+    streamUrl: channel.streamUrl,
+    imageUrl: channel.imageUrl || ""
+  };
 }
 
 function getFilteredImportedM3uChannels() {
@@ -2542,6 +2989,7 @@ function onMiniPlayerDragMove(event) {
 
   refs.miniPlayer.style.left = `${nextLeft}px`;
   refs.miniPlayer.style.top = `${nextTop}px`;
+  updateContentInsetsForMiniPlayer();
 }
 
 function endMiniPlayerDrag(event) {
@@ -2562,6 +3010,7 @@ function endMiniPlayerDrag(event) {
   dragState.pointerId = null;
   dragState.initialized = false;
   refs.miniPlayer.classList.remove("dragging");
+  updateContentInsetsForMiniPlayer();
 }
 
 function clearMiniPlayerHoldTimer() {
@@ -2577,6 +3026,28 @@ function resetMiniPlayerPosition() {
   refs.miniPlayer.style.removeProperty("top");
   refs.miniPlayer.style.removeProperty("right");
   refs.miniPlayer.style.removeProperty("bottom");
+}
+
+function updateContentInsetsForMiniPlayer() {
+  if (!state.settings.avoidMiniOverlap) {
+    refs.appShell.style.removeProperty("--content-mini-inset-right");
+    refs.appShell.style.removeProperty("--content-mini-inset-bottom");
+    return;
+  }
+
+  const miniVisible = !refs.miniPlayer.classList.contains("hidden") && refs.miniPlayer.isConnected;
+  if (!miniVisible) {
+    refs.appShell.style.removeProperty("--content-mini-inset-right");
+    refs.appShell.style.removeProperty("--content-mini-inset-bottom");
+    return;
+  }
+
+  const rect = refs.miniPlayer.getBoundingClientRect();
+  const inRightHalf = rect.left + rect.width / 2 > window.innerWidth / 2;
+  const inBottomHalf = rect.top + rect.height / 2 > window.innerHeight / 2;
+
+  refs.appShell.style.setProperty("--content-mini-inset-right", inRightHalf ? `${Math.ceil(rect.width + 18)}px` : "0px");
+  refs.appShell.style.setProperty("--content-mini-inset-bottom", inBottomHalf ? `${Math.ceil(rect.height + 18)}px` : "0px");
 }
 
 function clamp(value, min, max) {
@@ -2610,6 +3081,8 @@ function syncMiniPlayerContainer() {
   if (refs.miniPlayer.parentElement !== refs.appShell) {
     refs.appShell.appendChild(refs.miniPlayer);
   }
+
+  updateContentInsetsForMiniPlayer();
 }
 
 function loadBlockedStreamUrls() {
@@ -2673,6 +3146,97 @@ function saveImportedM3uState() {
   };
 
   localStorage.setItem(IMPORTED_M3U_STATE_KEY, JSON.stringify(payload));
+}
+
+function openSettingsDialog() {
+  hydrateSettingsUi();
+  refs.settingsDialog.showModal();
+}
+
+function hydrateSettingsUi() {
+  refs.settingsDefaultAspect.value = state.settings.defaultAspect;
+  refs.settingsAvoidMiniOverlap.checked = Boolean(state.settings.avoidMiniOverlap);
+  refs.settingsAutoPipOnMinimize.checked = Boolean(state.settings.autoPipOnMinimize);
+}
+
+function onSettingsSubmit(event) {
+  event.preventDefault();
+
+  state.settings.defaultAspect = ASPECT_MODES.includes(refs.settingsDefaultAspect.value)
+    ? refs.settingsDefaultAspect.value
+    : "fit";
+  state.settings.avoidMiniOverlap = refs.settingsAvoidMiniOverlap.checked;
+  state.settings.autoPipOnMinimize = refs.settingsAutoPipOnMinimize.checked;
+  playerState.aspectMode = state.settings.defaultAspect;
+
+  saveSettings();
+  applyAspectMode(playerState.aspectMode);
+  updateContentInsetsForMiniPlayer();
+  refs.settingsDialog.close();
+}
+
+function loadSettings() {
+  const fallback = {
+    defaultAspect: "fit",
+    avoidMiniOverlap: true,
+    autoPipOnMinimize: false,
+    volumeBoost: 1
+  };
+
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (!raw) {
+      return fallback;
+    }
+
+    const parsed = JSON.parse(raw);
+    return {
+      defaultAspect: ASPECT_MODES.includes(parsed?.defaultAspect) ? parsed.defaultAspect : fallback.defaultAspect,
+      avoidMiniOverlap: typeof parsed?.avoidMiniOverlap === "boolean" ? parsed.avoidMiniOverlap : fallback.avoidMiniOverlap,
+      autoPipOnMinimize:
+        typeof parsed?.autoPipOnMinimize === "boolean" ? parsed.autoPipOnMinimize : fallback.autoPipOnMinimize,
+      volumeBoost: BOOST_LEVELS.includes(parsed?.volumeBoost) ? parsed.volumeBoost : fallback.volumeBoost
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function saveSettings() {
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(state.settings));
+}
+
+function loadChannelHistory() {
+  try {
+    const raw = localStorage.getItem(CHANNEL_HISTORY_KEY);
+    if (!raw) {
+      return [];
+    }
+
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed
+      .filter((item) => item && typeof item.streamUrl === "string")
+      .map((item) => ({
+        id: typeof item.id === "string" ? item.id : createId("history"),
+        name: typeof item.name === "string" ? item.name : "Channel",
+        groupId: typeof item.groupId === "string" ? item.groupId : "",
+        groupName: typeof item.groupName === "string" ? item.groupName : "Channel",
+        streamUrl: item.streamUrl,
+        imageUrl: typeof item.imageUrl === "string" ? item.imageUrl : "",
+        playedAt: typeof item.playedAt === "string" ? item.playedAt : new Date().toISOString()
+      }))
+      .slice(0, CHANNEL_HISTORY_LIMIT);
+  } catch {
+    return [];
+  }
+}
+
+function saveChannelHistory() {
+  localStorage.setItem(CHANNEL_HISTORY_KEY, JSON.stringify(state.channelHistory));
 }
 
 function pruneBlockedStreamUrls() {

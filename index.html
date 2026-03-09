@@ -29,6 +29,7 @@
           <button id="scanChannelsBtn" class="btn">Scan Channels</button>
           <span id="scanStatus" class="scan-status hidden" aria-live="polite"></span>
           <button id="exportBtn" class="btn">Export</button>
+          <button id="settingsBtn" class="btn">Settings</button>
           <label class="btn file-btn" for="importInput">Import</label>
           <input id="importInput" type="file" accept="application/json" hidden />
         </div>
@@ -143,6 +144,11 @@
         <div class="dialog-actions">
           <button id="playerChannelUpBtn" type="button" class="btn">Channel ▲</button>
           <button id="playerChannelDownBtn" type="button" class="btn">Channel ▼</button>
+          <button id="playerHistoryBtn" type="button" class="btn">History</button>
+          <button id="playerAspectBtn" type="button" class="btn">Aspect: 16:9</button>
+          <button id="playerBoostBtn" type="button" class="btn">Boost: 100%</button>
+          <button id="playerScreenshotBtn" type="button" class="btn">Screenshot</button>
+          <button id="playerPipBtn" type="button" class="btn">Detach (PiP)</button>
           <button id="playerCastBtn" type="button" class="btn hidden">Cast</button>
           <button id="playerSystemBtn" type="button" class="btn">System Player</button>
           <a id="playerOpenExternal" class="btn" target="_blank" rel="noopener noreferrer">Open External</a>
@@ -150,6 +156,58 @@
           <button id="playerCloseBtn" type="button" class="btn">Minimize</button>
         </div>
       </div>
+    </dialog>
+
+    <dialog id="historyDialog" class="dialog glass">
+      <div class="player-shell">
+        <div class="player-head">
+          <div>
+            <h3>Channel History</h3>
+            <p>Recently played channels</p>
+          </div>
+        </div>
+
+        <div id="historyList" class="m3u-list"></div>
+        <p id="historyEmpty" class="field-feedback hidden">No recent channels yet.</p>
+
+        <div class="dialog-actions">
+          <button id="historyClearBtn" type="button" class="btn danger">Clear</button>
+          <button id="historyCloseBtn" type="button" class="btn" data-close="historyDialog">Close</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="settingsDialog" class="dialog glass">
+      <form id="settingsForm" method="dialog" class="form-stack">
+        <h3>Settings</h3>
+
+        <label>
+          Default Aspect Mode
+          <select id="settingsDefaultAspect">
+            <option value="fit">Fit (16:9)</option>
+            <option value="contain">Contain (black bars)</option>
+            <option value="cover">Cover (crop)</option>
+            <option value="fill">Stretch</option>
+            <option value="tab-max">Max in Tab</option>
+            <option value="pip">Detach (PiP)</option>
+          </select>
+        </label>
+
+        <label>
+          <input id="settingsAvoidMiniOverlap" type="checkbox" />
+          Keep content clear of mini player
+        </label>
+
+        <label>
+          <input id="settingsAutoPipOnMinimize" type="checkbox" />
+          Auto-detach to PiP when minimizing
+        </label>
+
+        <div class="dialog-actions">
+          <button type="button" class="btn" data-close="settingsDialog">Cancel</button>
+          <button type="submit" class="btn primary">Save</button>
+        </div>
+      </form>
     </dialog>
 
     <dialog id="m3uDialog" class="dialog m3u-dialog glass">

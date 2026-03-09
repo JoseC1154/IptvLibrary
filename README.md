@@ -100,3 +100,18 @@ Library exports use this JSON shape:
 - **Scan Channels** runs browser-side checks and marks cards with `Scan: Reachable`, `Scan: Blocked (403)`, or issue warnings.
 - Double-click a group in the sidebar to edit it.
 - Click **Edit** on any channel card to update or remove it.
+
+## To Do
+
+- [x] Channel up/down cycles through the current filtered playback list.
+- [x] Aspect mode remains consistent while cycling channels.
+- [x] Volume boost supports levels beyond 100%.
+- [x] Screenshot capture can set the current channel thumbnail (when stream security allows frame capture).
+- [x] Export supports JSON and full-library M3U.
+- [x] Settings menu added.
+- [x] Detach mode via Picture-in-Picture is available and included in the aspect loop.
+- [x] Now Playing bar moved to a smaller side layout.
+- [x] Mini-player overlap avoidance adds dynamic content insets.
+- [x] Aspect ratio loop includes a "Max in Tab" mode.
+- [x] Imported channels already in the library are clearly marked.
+- [x] Player dialog is resizable from the sides/corners.
